@@ -1,0 +1,11 @@
+[Unit]
+Description=Safebox container daemon
+
+[Service]
+Type=dbus
+BusName=org.safebox
+ExecStart=%h/.local/bin/safebox serve
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
