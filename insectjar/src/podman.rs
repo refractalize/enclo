@@ -91,14 +91,3 @@ pub async fn container_state(container: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
-pub async fn rm_if_exists(container: &str) -> Result<()> {
-    let state = container_state(container).await?;
-    if state != "not found" {
-        Command::new("podman")
-            .args(["rm", "--force", container])
-            .status()
-            .await
-            .context("failed to spawn podman rm")?;
-    }
-    Ok(())
-}

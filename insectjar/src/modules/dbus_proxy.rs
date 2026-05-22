@@ -56,6 +56,7 @@ async fn wait_for_socket(path: &std::path::Path, child: &Arc<Mutex<Option<Child>
 #[async_trait]
 impl Module for DbusProxy {
     fn name(&self) -> &str { "dbus_proxy" }
+    fn enabled(&self) -> bool { self.config.enabled }
 
     async fn setup(&self, ctx: &Context) -> anyhow::Result<ModuleOutput> {
         let host_bus = format!("unix:path={}", ctx.runtime_dir.join("bus").display());

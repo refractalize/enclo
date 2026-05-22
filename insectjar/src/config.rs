@@ -43,10 +43,6 @@ fn default_exec_shell() -> String { "bash".into() }
 #[derive(Debug, Deserialize, Default)]
 pub struct ModulesConfig {
     #[serde(default)]
-    pub enabled: Vec<String>,
-    #[serde(default)]
-    pub agent_vault: AgentVaultConfig,
-    #[serde(default)]
     pub gpg_agent: GpgAgentConfig,
     #[serde(default)]
     pub ssh_agent: SshAgentConfig,
@@ -56,23 +52,50 @@ pub struct ModulesConfig {
     pub docker_socket: DockerSocketConfig,
     #[serde(default)]
     pub podman_socket: PodmanSocketConfig,
+    #[serde(default)]
+    pub proxy: InsectjarProxyConfig,
+    #[serde(default)]
+    pub nvidia: NvidiaConfig,
+}
+
+#[derive(Debug, Deserialize, Default, Clone)]
+pub struct InsectjarProxyConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Path to the insectjar-proxy binary. Defaults to "insectjar-proxy" (i.e. resolved via PATH).
+    #[serde(default = "default_proxy_binary")]
+    pub binary: String,
+    /// Path to the base insectjar-proxy config file.
+    pub config: String,
+}
+
+fn default_proxy_binary() -> String { "insectjar-proxy".into() }
+
+#[derive(Debug, Deserialize, Default)]
+pub struct NvidiaConfig {
+    #[serde(default)]
+    pub enabled: bool,
 }
 
 #[derive(Debug, Deserialize, Default)]
 pub struct PodmanSocketConfig {
+    #[serde(default)]
+    pub enabled: bool,
     /// Overrides the default of $XDG_RUNTIME_DIR/podman/podman.sock
     pub socket_path: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct DockerSocketConfig {
+    #[serde(default)]
+    pub enabled: bool,
     #[serde(default = "default_docker_socket_path")]
     pub socket_path: String,
 }
 
 impl Default for DockerSocketConfig {
     fn default() -> Self {
-        Self { socket_path: default_docker_socket_path() }
+        Self { enabled: false, socket_path: default_docker_socket_path() }
     }
 }
 
@@ -80,49 +103,17 @@ fn default_docker_socket_path() -> String {
     "/var/run/docker.sock".into()
 }
 
+
 #[derive(Debug, Deserialize, Default)]
-pub struct AgentVaultConfig {
-    #[serde(default = "default_agent_vault_image")]
-    pub image: String,
-    /// HTTP URL of the management API (health check, CA cert). Default: http://localhost:14321
-    #[serde(default = "default_agent_vault_api_url")]
-    pub api_url: String,
-    /// HTTPS URL of the transparent proxy, injected as HTTP_PROXY/HTTPS_PROXY. Default: https://localhost:14322
-    #[serde(default = "default_agent_vault_proxy_url")]
-    pub proxy_url: String,
-    /// Shell command whose stdout is the master password (e.g. a pass/secret-tool lookup).
-    /// Required to unlock the vault on startup.
-    pub master_password_command: Option<String>,
-    /// Shell command whose stdout is the agent-vault API token.
-    /// When set, the token is injected into the proxy URL as https://<token>@host:port.
-    pub token_command: Option<String>,
-    /// Named podman volume for vault data persistence.
-    #[serde(default = "default_agent_vault_volume")]
-    pub data_volume: String,
-    /// Localhost ports to publish: management port and proxy port.
-    #[serde(default = "default_agent_vault_ports")]
-    pub ports: Vec<String>,
-    /// Additional environment variables to pass to the agent-vault container.
+pub struct GpgAgentConfig {
     #[serde(default)]
-    pub env: Vec<String>,
+    pub enabled: bool,
 }
-
-fn default_agent_vault_image() -> String { "docker.io/infisical/agent-vault".into() }
-fn default_agent_vault_api_url() -> String { "http://localhost:14321".into() }
-fn default_agent_vault_proxy_url() -> String { "https://localhost:14322".into() }
-fn default_agent_vault_volume() -> String { "agent-vault-data".into() }
-fn default_agent_vault_ports() -> Vec<String> {
-    vec![
-        "127.0.0.1:14321:14321".into(),
-        "127.0.0.1:14322:14322".into(),
-    ]
-}
-
-#[derive(Debug, Deserialize, Default)]
-pub struct GpgAgentConfig {}
 
 #[derive(Debug, Deserialize, Default)]
 pub struct SshAgentConfig {
+    #[serde(default)]
+    pub enabled: bool,
     /// Which SSH agent backend to expose into the container.
     /// "gpg_agent" (default) uses the GPG agent's SSH socket.
     /// "standalone" uses a regular ssh-agent socket.
@@ -146,6 +137,8 @@ pub enum SshBackend {
 
 #[derive(Debug, Deserialize, Default)]
 pub struct DbusProxyConfig {
+    #[serde(default)]
+    pub enabled: bool,
     /// Names granted TALK policy (--talk=NAME). Allows sending method calls and receiving broadcasts.
     #[serde(default = "default_dbus_interfaces")]
     pub allowed_interfaces: Vec<String>,
@@ -165,9 +158,53 @@ impl Config {
     pub fn load(path: &std::path::Path) -> anyhow::Result<Self> {
         let content = std::fs::read_to_string(path)
             .map_err(|e| anyhow::anyhow!("failed to read config {}: {}", path.display(), e))?;
-        let config: Config = toml::from_str(&content)
+        let mut config: Config = toml::from_str(&content)
             .map_err(|e| anyhow::anyhow!("failed to parse config {}: {}", path.display(), e))?;
+        let base = path.parent().unwrap_or(std::path::Path::new("."));
+        config.resolve_paths(base);
         Ok(config)
     }
 
+    fn resolve_paths(&mut self, base: &std::path::Path) {
+        for vol in &mut self.container.volumes {
+            *vol = resolve_volume_host(base, vol);
+        }
+        let c = &self.modules.proxy.config;
+        if !c.is_empty() {
+            self.modules.proxy.config = resolve_str(base, c);
+        }
+    }
+}
+
+/// Resolves the host side of a `host:container[:opts]` volume string.
+/// Named podman volumes (no `/`, no leading `.`) and specifiers (starting with `%`)
+/// are left unchanged; everything else is treated as a host path.
+fn resolve_volume_host(base: &std::path::Path, vol: &str) -> String {
+    let mut parts = vol.splitn(3, ':');
+    let host = parts.next().unwrap_or("");
+    let rest: Vec<&str> = parts.collect();
+
+    let resolved = if host.starts_with('%') || std::path::Path::new(host).is_absolute() {
+        host.to_string()
+    } else if host.contains('/') || host.starts_with('.') {
+        base.join(host).to_string_lossy().into_owned()
+    } else {
+        // Plain name with no path separators — treat as a named podman volume.
+        host.to_string()
+    };
+
+    if rest.is_empty() {
+        resolved
+    } else {
+        format!("{}:{}", resolved, rest.join(":"))
+    }
+}
+
+/// Resolves a string path against `base` unless it is absolute or a specifier.
+fn resolve_str(base: &std::path::Path, s: &str) -> String {
+    if s.starts_with('%') || std::path::Path::new(s).is_absolute() {
+        s.to_string()
+    } else {
+        base.join(s).to_string_lossy().into_owned()
+    }
 }

@@ -20,6 +20,7 @@ impl ProxyAuth {
         })
     }
 
+
     /// Returns true if the request carries valid proxy credentials.
     pub fn verify<B>(&self, req: &Request<B>) -> bool {
         let Some(header) = req.headers().get("proxy-authorization") else {

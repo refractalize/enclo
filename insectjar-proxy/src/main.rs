@@ -4,6 +4,7 @@ mod store;
 mod tls;
 
 use std::{path::PathBuf, sync::Arc};
+use clap::{Parser, Subcommand};
 use hyper_util::{
     client::legacy::{Client, connect::HttpConnector},
     rt::TokioExecutor,
@@ -13,23 +14,67 @@ use tokio::signal::unix::{signal, SignalKind};
 use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
 
+#[derive(Parser)]
+#[command(name = "insectjar-proxy", about = "Authenticating HTTPS proxy")]
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Run the proxy server
+    Serve {
+        /// Path to config file [default: $XDG_CONFIG_HOME/insectjar-proxy/config.toml]
+        #[arg(long, short = 'c')]
+        config: Option<PathBuf>,
+
+        /// Proxy auth username; must be paired with --password-hash
+        #[arg(long, requires = "password_hash")]
+        username: Option<String>,
+
+        /// Argon2 password hash for proxy auth; must be paired with --username
+        #[arg(long, requires = "username")]
+        password_hash: Option<String>,
+    },
+
+    /// Generate an Argon2 password hash for use in proxy authentication.
+    /// Reads the password from the INSECTJAR_PROXY_PASSWORD environment variable,
+    /// or prompts interactively if not set.
+    GenerateBasicAuth {
+        /// Username to embed in the generated config snippet
+        username: String,
+    },
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     rustls::crypto::ring::default_provider()
         .install_default()
         .expect("failed to install rustls crypto provider");
 
-    let mut args = std::env::args().skip(1);
-    match args.next().as_deref() {
-        Some("generate-basic-auth") => {
-            let username = args.next()
-                .ok_or_else(|| anyhow::anyhow!("usage: insectjar-proxy generate-basic-auth <username>"))?;
-            return cmd_generate_basic_auth(&username);
-        }
-        _ => {}
-    }
+    let cli = Cli::parse();
 
-    run_proxy().await
+    match cli.command {
+        Command::GenerateBasicAuth { username } => cmd_generate_basic_auth(&username),
+        Command::Serve { config, username, password_hash } => {
+            let cli_auth = match (username, password_hash) {
+                (Some(username), Some(password_hash)) => {
+                    Some(config::ProxyAuthConfig { username, password_hash })
+                }
+                _ => None,
+            };
+            let config_path = config.unwrap_or_else(default_config_path);
+            run_proxy(config_path, cli_auth).await
+        }
+    }
+}
+
+fn default_config_path() -> PathBuf {
+    dirs_next::config_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("insectjar-proxy")
+        .join("config.toml")
 }
 
 fn cmd_generate_basic_auth(username: &str) -> anyhow::Result<()> {
@@ -58,16 +103,7 @@ fn cmd_generate_basic_auth(username: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn run_proxy() -> anyhow::Result<()> {
-    let config_path = std::env::var("INSECTJAR_PROXY_CONFIG")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            dirs_next::config_dir()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join("insectjar-proxy")
-                .join("config.toml")
-        });
-
+async fn run_proxy(config_path: PathBuf, cli_auth: Option<config::ProxyAuthConfig>) -> anyhow::Result<()> {
     let config = config::Config::from_file(&config_path)
         .map_err(|e| anyhow::anyhow!("failed to load config {}: {e}", config_path.display()))?;
 
@@ -93,10 +129,12 @@ async fn run_proxy() -> anyhow::Result<()> {
 
     let (config_tx, config_rx) = watch::channel(Arc::new(config));
 
-    let proxy_auth = config_rx.borrow()
-        .proxy_auth
-        .as_ref()
-        .map(proxy::auth::ProxyAuth::new);
+    let proxy_auth = if let Some(auth) = cli_auth.as_ref() {
+        Some(proxy::auth::ProxyAuth::new(auth))
+    } else {
+        let config = config_rx.borrow();
+        config.proxy_auth.as_ref().map(proxy::auth::ProxyAuth::new)
+    };
 
     eprintln!("insectjar-proxy: listening on {}", config_rx.borrow().listen);
     if proxy_auth.is_some() {

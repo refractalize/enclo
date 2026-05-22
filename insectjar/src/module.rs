@@ -73,6 +73,8 @@ pub trait Module: Send + Sync {
         &[Platform::Linux, Platform::MacOs]
     }
 
+    fn enabled(&self) -> bool { true }
+
     async fn setup(&self, ctx: &Context) -> anyhow::Result<ModuleOutput>;
 
     async fn teardown(&self, ctx: &Context) -> anyhow::Result<()> {

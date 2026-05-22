@@ -41,6 +41,7 @@ impl SshAgent {
 #[async_trait]
 impl Module for SshAgent {
     fn name(&self) -> &str { "ssh_agent" }
+    fn enabled(&self) -> bool { self.config.enabled }
 
     async fn setup(&self, ctx: &Context) -> anyhow::Result<ModuleOutput> {
         let socket = self.host_socket_path(ctx)?;

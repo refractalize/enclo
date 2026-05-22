@@ -85,13 +85,24 @@ pub enum AuthConfig {
 impl Config {
     pub fn from_file(path: &std::path::Path) -> anyhow::Result<Self> {
         let text = std::fs::read_to_string(path)?;
-        let config: Config = toml::from_str(&text)?;
+        let mut config: Config = toml::from_str(&text)?;
+        let base = path.parent().unwrap_or(std::path::Path::new("."));
+        config.tls.ca_cert = resolve_path(base, &config.tls.ca_cert);
+        config.tls.ca_key = resolve_path(base, &config.tls.ca_key);
         Ok(config)
     }
 
     /// Returns the first matching rule for the given hostname.
     pub fn match_rule(&self, host: &str) -> Option<&Rule> {
         self.rules.iter().find(|r| WildMatch::new(&r.domain).matches(host))
+    }
+}
+
+fn resolve_path(base: &std::path::Path, path: &std::path::Path) -> std::path::PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        base.join(path)
     }
 }
 

@@ -36,6 +36,7 @@ impl PodmanSocket {
 #[async_trait]
 impl Module for PodmanSocket {
     fn name(&self) -> &str { "podman_socket" }
+    fn enabled(&self) -> bool { self.config.enabled }
 
     async fn setup(&self, ctx: &Context) -> anyhow::Result<ModuleOutput> {
         let socket = self.resolve_socket_path(ctx)?;

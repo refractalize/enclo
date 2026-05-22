@@ -33,6 +33,7 @@ impl DockerSocket {
 #[async_trait]
 impl Module for DockerSocket {
     fn name(&self) -> &str { "docker_socket" }
+    fn enabled(&self) -> bool { self.config.enabled }
 
     async fn setup(&self, _ctx: &Context) -> anyhow::Result<ModuleOutput> {
         let socket = self.resolve_socket_path()?;

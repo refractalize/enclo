@@ -6,11 +6,13 @@ use crate::{
     module::{Module, ModuleOutput, VolumeMount},
 };
 
-pub struct GpgAgent;
+pub struct GpgAgent {
+    config: GpgAgentConfig,
+}
 
 impl GpgAgent {
-    pub fn new(_config: GpgAgentConfig) -> Self {
-        Self
+    pub fn new(config: GpgAgentConfig) -> Self {
+        Self { config }
     }
 
     fn extra_socket_path(&self, ctx: &Context) -> PathBuf {
@@ -30,6 +32,7 @@ impl GpgAgent {
 #[async_trait]
 impl Module for GpgAgent {
     fn name(&self) -> &str { "gpg_agent" }
+    fn enabled(&self) -> bool { self.config.enabled }
 
     async fn setup(&self, ctx: &Context) -> anyhow::Result<ModuleOutput> {
         // Prepare container GNUPGHOME in the module runtime dir

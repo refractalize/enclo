@@ -1,14 +1,24 @@
 use async_trait::async_trait;
 use crate::{
+    config::NvidiaConfig,
     context::{Context, Platform},
     module::{Module, ModuleOutput},
 };
 
-pub struct Nvidia;
+pub struct Nvidia {
+    config: NvidiaConfig,
+}
+
+impl Nvidia {
+    pub fn new(config: NvidiaConfig) -> Self {
+        Self { config }
+    }
+}
 
 #[async_trait]
 impl Module for Nvidia {
     fn name(&self) -> &str { "nvidia" }
+    fn enabled(&self) -> bool { self.config.enabled }
 
     fn supported_platforms(&self) -> &[Platform] {
         &[Platform::Linux]

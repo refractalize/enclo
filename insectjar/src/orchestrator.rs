@@ -20,19 +20,17 @@ impl Orchestrator {
         Self { modules }
     }
 
-    /// Returns modules filtered to `enabled` list, in topological order.
-    fn sorted<'a>(
-        modules: &'a [Box<dyn Module>],
-        enabled: &[String],
-    ) -> Result<Vec<&'a dyn Module>> {
-        let enabled_set: HashSet<&str> = enabled.iter().map(|s| s.as_str()).collect();
+    /// Returns enabled modules in topological order.
+    fn sorted<'a>(modules: &'a [Box<dyn Module>]) -> Result<Vec<&'a dyn Module>> {
         let by_name: HashMap<&str, &dyn Module> = modules
             .iter()
+            .filter(|m| m.enabled())
             .map(|m| (m.name(), m.as_ref()))
             .collect();
+        let enabled_set: HashSet<&str> = by_name.keys().copied().collect();
 
         // Kahn's algorithm
-        let nodes: Vec<&str> = enabled.iter().map(|s| s.as_str()).collect();
+        let nodes: Vec<&str> = by_name.keys().copied().collect();
         let mut in_degree: HashMap<&str, usize> = nodes.iter().map(|&n| (n, 0)).collect();
         let mut adj: HashMap<&str, Vec<&str>> = HashMap::new();
 
@@ -87,7 +85,7 @@ impl Orchestrator {
         ctx: &Context,
         ready: Option<tokio::sync::oneshot::Sender<Result<()>>>,
     ) -> Result<()> {
-        let ordered = Self::sorted(&self.modules, &config.modules.enabled)?;
+        let ordered = Self::sorted(&self.modules)?;
         let platform = &ctx.platform;
 
         create_insectjar_dir(ctx).await?;
@@ -141,7 +139,19 @@ impl Orchestrator {
                         }
                     }
                 }
-                Err(e) => warn!("could not run post-start commands: {:#}", e),
+                Err(e) => {
+                    podman::stop(&ctx.container_name).await.ok();
+                    let _ = container_proc.wait().await;
+                    remove_exec_env(ctx).await;
+                    for m in active.iter().rev() {
+                        let _ = m.teardown(ctx).await;
+                    }
+                    let err = anyhow::anyhow!("{:#}", e);
+                    if let Some(tx) = ready {
+                        let _ = tx.send(Err(anyhow::anyhow!("{}", err)));
+                    }
+                    return Err(err);
+                }
             }
         }
 
