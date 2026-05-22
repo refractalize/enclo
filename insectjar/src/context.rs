@@ -24,16 +24,16 @@ pub struct Context {
     pub home: PathBuf,
     pub runtime_dir: PathBuf,
     pub config_dir: PathBuf,
-    /// $XDG_RUNTIME_DIR/safebox/<container_name>/ — private to this container instance
-    pub safebox_dir: PathBuf,
+    /// $XDG_RUNTIME_DIR/insectjar/<container_name>/ — private to this container instance
+    pub insectjar_dir: PathBuf,
     pub platform: Platform,
     pub container_name: String,
 }
 
 impl Context {
-    /// Returns $XDG_RUNTIME_DIR/safebox/<container_name>/<module_name>/
+    /// Returns $XDG_RUNTIME_DIR/insectjar/<container_name>/<module_name>/
     pub fn module_dir(&self, module: &str) -> PathBuf {
-        self.safebox_dir.join(module)
+        self.insectjar_dir.join(module)
     }
 
     /// Expands systemd-style specifiers in a string:
@@ -63,7 +63,7 @@ impl Context {
             .map(PathBuf::from)
             .unwrap_or_else(|_| home.join(".config"));
 
-        let safebox_dir = runtime_dir.join("safebox").join(&container_name);
+        let insectjar_dir = runtime_dir.join("insectjar").join(&container_name);
 
         Ok(Self {
             user,
@@ -71,7 +71,7 @@ impl Context {
             home,
             runtime_dir,
             config_dir,
-            safebox_dir,
+            insectjar_dir,
             platform: Platform::current(),
             container_name,
         })

@@ -10,15 +10,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Build release binary
 cargo build --release --manifest-path "${SCRIPT_DIR}/Cargo.toml"
 
-install -Dm755 "${SCRIPT_DIR}/target/release/safebox" "${BIN_DIR}/safebox"
-echo "installed: ${BIN_DIR}/safebox"
+install -Dm755 "${SCRIPT_DIR}/target/release/insectjar" "${BIN_DIR}/insectjar"
+echo "installed: ${BIN_DIR}/insectjar"
 
-install -Dm644 "${SCRIPT_DIR}/systemd/safebox.service" "${SYSTEMD_USER_DIR}/safebox.service"
-echo "installed: ${SYSTEMD_USER_DIR}/safebox.service"
+install -Dm644 "${SCRIPT_DIR}/systemd/insectjar.service" "${SYSTEMD_USER_DIR}/insectjar.service"
+echo "installed: ${SYSTEMD_USER_DIR}/insectjar.service"
 
-install -Dm644 "${SCRIPT_DIR}/systemd/org.safebox.service" "${DBUS_SERVICES_DIR}/org.safebox.service"
-echo "installed: ${DBUS_SERVICES_DIR}/org.safebox.service"
+install -Dm644 "${SCRIPT_DIR}/systemd/org.insectjar.service" "${DBUS_SERVICES_DIR}/org.insectjar.service"
+echo "installed: ${DBUS_SERVICES_DIR}/org.insectjar.service"
 
 systemctl --user daemon-reload
-systemctl --user enable safebox.service
-echo "enabled safebox.service (D-Bus activated)"
+systemctl --user enable insectjar.service
+echo "enabled insectjar.service (D-Bus activated)"

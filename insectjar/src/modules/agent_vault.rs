@@ -36,7 +36,7 @@ impl AgentVault {
     }
 
     fn container_name(&self, ctx: &Context) -> String {
-        format!("safebox-{}-agent-vault", ctx.container_name)
+        format!("insectjar-{}-agent-vault", ctx.container_name)
     }
 
     async fn run_command(label: &str, cmd: &str) -> anyhow::Result<String> {

@@ -90,7 +90,7 @@ impl Orchestrator {
         let ordered = Self::sorted(&self.modules, &config.modules.enabled)?;
         let platform = &ctx.platform;
 
-        create_safebox_dir(ctx).await?;
+        create_insectjar_dir(ctx).await?;
 
         let mut combined = ModuleOutput::default();
         let mut active: Vec<&dyn Module> = Vec::new();
@@ -374,7 +374,7 @@ fn shell_quote(s: &str) -> String {
 }
 
 fn exec_env_path(ctx: &Context) -> std::path::PathBuf {
-    ctx.safebox_dir.join("exec-env")
+    ctx.insectjar_dir.join("exec-env")
 }
 
 async fn write_exec_env(ctx: &Context, vars: &[(String, String)]) -> Result<()> {
@@ -401,10 +401,10 @@ async fn remove_exec_env(ctx: &Context) {
     }
 }
 
-async fn create_safebox_dir(ctx: &Context) -> Result<()> {
+async fn create_insectjar_dir(ctx: &Context) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
-    tokio::fs::create_dir_all(&ctx.safebox_dir).await?;
-    std::fs::set_permissions(&ctx.safebox_dir, std::fs::Permissions::from_mode(0o700))?;
+    tokio::fs::create_dir_all(&ctx.insectjar_dir).await?;
+    std::fs::set_permissions(&ctx.insectjar_dir, std::fs::Permissions::from_mode(0o700))?;
     Ok(())
 }
 

@@ -2,9 +2,9 @@ use anyhow::{Context as _, Result};
 use zbus::proxy;
 
 #[proxy(
-    interface = "org.safebox.Manager",
-    default_service = "org.safebox",
-    default_path = "/org/safebox"
+    interface = "org.insectjar.Manager",
+    default_service = "org.insectjar",
+    default_path = "/org/insectjar"
 )]
 trait Manager {
     async fn start(&self, name: &str, config_path: &str) -> zbus::Result<()>;
@@ -17,9 +17,9 @@ trait Manager {
 
 async fn connect() -> Result<ManagerProxy<'static>> {
     let conn = zbus::Connection::session().await
-        .context("failed to connect to D-Bus session bus (is safebox serve running?)")?;
+        .context("failed to connect to D-Bus session bus (is insectjar serve running?)")?;
     ManagerProxy::new(&conn).await
-        .context("failed to connect to org.safebox — is safebox serve running?")
+        .context("failed to connect to org.insectjar — is insectjar serve running?")
 }
 
 pub async fn start(name: &str, config_path: &str) -> Result<()> {

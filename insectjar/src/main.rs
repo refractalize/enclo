@@ -19,7 +19,7 @@ use modules::build_registry;
 use orchestrator::Orchestrator;
 
 #[derive(Parser)]
-#[command(name = "safebox", about = "Modular rootless container launcher")]
+#[command(name = "insectjar", about = "Modular rootless container launcher")]
 struct Cli {
     /// Explicit config file path (overrides NAME)
     #[arg(short, long, global = true)]
@@ -36,7 +36,7 @@ enum Command {
 
     /// Start a container directly (blocking, no daemon required)
     Run {
-        /// Container name; resolves ~/.config/safebox/<NAME>.toml (default: dev)
+        /// Container name; resolves ~/.config/insectjar/<NAME>.toml (default: dev)
         name: Option<String>,
     },
 
@@ -84,7 +84,7 @@ enum Command {
 
     /// Create missing directories in the home named volume with correct ownership
     SetupVolume {
-        /// Container name; resolves ~/.config/safebox/<NAME>.toml (default: dev)
+        /// Container name; resolves ~/.config/insectjar/<NAME>.toml (default: dev)
         name: Option<String>,
         /// Print what would be created without making any changes
         #[arg(long)]
@@ -98,18 +98,18 @@ fn resolve_config(explicit: Option<PathBuf>, name: Option<&str>) -> PathBuf {
     }
     let name = name.unwrap_or("dev");
     let home = std::env::var("HOME").unwrap_or_default();
-    PathBuf::from(home).join(format!(".config/safebox/{}.toml", name))
+    PathBuf::from(home).join(format!(".config/insectjar/{}.toml", name))
 }
 
 fn config_dir() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_default();
-    PathBuf::from(home).join(".config/safebox")
+    PathBuf::from(home).join(".config/insectjar")
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env().add_directive("safebox=info".parse()?))
+        .with_env_filter(EnvFilter::from_default_env().add_directive("insectjar=info".parse()?))
         .init();
 
     let cli = Cli::parse();
@@ -157,7 +157,7 @@ async fn main() -> Result<()> {
             // Ensure container is running via daemon
             client::ensure_running(name, &path.to_string_lossy()).await?;
 
-            let exec_env = ctx.safebox_dir.join("exec-env");
+            let exec_env = ctx.insectjar_dir.join("exec-env");
             if !exec_env.exists() {
                 anyhow::bail!(
                     "exec-env not found at {}; container may not be fully started",
@@ -177,7 +177,7 @@ async fn main() -> Result<()> {
             let config = Config::load(&path)?;
             let ctx = Context::new(config.container.name.clone())?;
 
-            let exec_env = ctx.safebox_dir.join("exec-env");
+            let exec_env = ctx.insectjar_dir.join("exec-env");
             if !exec_env.exists() {
                 anyhow::bail!(
                     "no exec-env file found at {}; is the container running?",

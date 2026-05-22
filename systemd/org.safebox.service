@@ -1,4 +1,0 @@
-[D-BUS Service]
-Name=org.safebox
-Exec=/usr/bin/false
-SystemdService=safebox.service

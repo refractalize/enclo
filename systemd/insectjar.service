@@ -1,0 +1,11 @@
+[Unit]
+Description=Insectjar container daemon
+
+[Service]
+Type=dbus
+BusName=org.insectjar
+ExecStart=%h/.local/bin/insectjar serve
+Restart=on-failure
+
+[Install]
+WantedBy=default.target

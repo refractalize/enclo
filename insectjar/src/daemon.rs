@@ -133,7 +133,7 @@ impl Manager {
     }
 }
 
-#[interface(name = "org.safebox.Manager")]
+#[interface(name = "org.insectjar.Manager")]
 impl Manager {
     async fn start(&self, name: String, config_path: String) -> zbus::fdo::Result<()> {
         // If already running or starting, subscribe to the existing watch and wait.
@@ -258,12 +258,12 @@ impl Manager {
 }
 
 pub async fn run_daemon(config_dir: std::path::PathBuf) -> Result<()> {
-    info!("daemon: starting on session bus as org.safebox");
+    info!("daemon: starting on session bus as org.insectjar");
     let manager = Manager::new(config_dir);
 
     let _conn = connection::Builder::session()?
-        .name("org.safebox")?
-        .serve_at("/org/safebox", manager)?
+        .name("org.insectjar")?
+        .serve_at("/org/insectjar", manager)?
         .build()
         .await?;
 
