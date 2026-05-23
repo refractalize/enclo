@@ -2,7 +2,7 @@ use std::{collections::HashMap, sync::Arc};
 use tokio::sync::RwLock;
 use wildmatch::WildMatch;
 use crate::config::{Route, StoreConfig};
-use super::backend::BackendClient;
+use crate::backend::BackendClient;
 
 pub struct Router {
     routes: RwLock<Vec<CompiledRoute>>,

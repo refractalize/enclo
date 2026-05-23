@@ -13,6 +13,7 @@ trait Manager {
     async fn list_containers(&self) -> zbus::Result<Vec<(String, String)>>;
     async fn restart(&self, name: &str, config_path: &str) -> zbus::Result<()>;
     async fn ensure_running(&self, name: &str, config_path: &str) -> zbus::Result<()>;
+    async fn reload(&self, name: &str) -> zbus::Result<()>;
 }
 
 async fn connect() -> Result<ManagerProxy<'static>> {
@@ -64,4 +65,10 @@ pub async fn ensure_running(name: &str, config_path: &str) -> Result<()> {
     let proxy = connect().await?;
     proxy.ensure_running(name, config_path).await
         .with_context(|| format!("failed to ensure container '{}' is running", name))
+}
+
+pub async fn reload(name: &str) -> Result<()> {
+    let proxy = connect().await?;
+    proxy.reload(name).await
+        .with_context(|| format!("failed to reload container '{}'", name))
 }

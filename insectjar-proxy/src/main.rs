@@ -109,7 +109,7 @@ async fn run_proxy(config_path: PathBuf, cli_auth: Option<config::ProxyAuthConfi
 
     let shutdown = Arc::new(Notify::new());
     let store = Arc::new(
-        store::StoreStack::build(&config.store, Arc::clone(&shutdown))
+        store::StoreStack::build(&config.store, Arc::clone(&shutdown), "insectjar-proxy")
             .await
             .map_err(|e| anyhow::anyhow!("failed to start store: {e}"))?,
     );
@@ -143,8 +143,12 @@ async fn run_proxy(config_path: PathBuf, cli_auth: Option<config::ProxyAuthConfi
 
     let shutdown_clone = Arc::clone(&shutdown);
     tokio::spawn(async move {
-        tokio::signal::ctrl_c().await.ok();
-        shutdown_clone.notify_waiters();
+        let mut sigterm = signal(SignalKind::terminate()).expect("failed to register SIGTERM handler");
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = sigterm.recv() => {}
+        }
+        shutdown_clone.notify_one();
     });
 
     let mut sighup = signal(SignalKind::hangup())?;

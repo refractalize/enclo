@@ -75,9 +75,16 @@ pub trait Module: Send + Sync {
 
     fn enabled(&self) -> bool { true }
 
+    fn can_reload(&self) -> bool { false }
+
     async fn setup(&self, ctx: &Context) -> anyhow::Result<ModuleOutput>;
 
     async fn teardown(&self, ctx: &Context) -> anyhow::Result<()> {
+        let _ = ctx;
+        Ok(())
+    }
+
+    async fn reload(&self, ctx: &Context) -> anyhow::Result<()> {
         let _ = ctx;
         Ok(())
     }

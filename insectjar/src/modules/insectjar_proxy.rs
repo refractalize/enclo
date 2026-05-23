@@ -147,6 +147,27 @@ impl Module for InsectjarProxy {
         Ok(out)
     }
 
+    fn can_reload(&self) -> bool { true }
+
+    async fn reload(&self, _ctx: &Context) -> anyhow::Result<()> {
+        let guard = self.child.lock().await;
+        if let Some(child) = guard.as_ref() {
+            let pid = child.id()
+                .ok_or_else(|| anyhow::anyhow!("insectjar-proxy has no PID (already exited?)"))?;
+            let rc = unsafe { libc::kill(pid as libc::pid_t, libc::SIGHUP) };
+            if rc != 0 {
+                anyhow::bail!(
+                    "failed to send SIGHUP to insectjar-proxy (pid {}): {}",
+                    pid, std::io::Error::last_os_error()
+                );
+            }
+            tracing::info!("sent SIGHUP to insectjar-proxy (pid {})", pid);
+        } else {
+            anyhow::bail!("insectjar-proxy is not running");
+        }
+        Ok(())
+    }
+
     async fn teardown(&self, _ctx: &Context) -> anyhow::Result<()> {
         if let Some(mut child) = self.child.lock().await.take() {
             tracing::info!("stopping insectjar-proxy");

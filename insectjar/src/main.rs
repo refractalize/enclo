@@ -76,6 +76,12 @@ enum Command {
         cmd: Vec<String>,
     },
 
+    /// Ask the daemon to reload config for a running container's modules (sends SIGHUP to supporting services)
+    Reload {
+        /// Container name (default: dev)
+        name: Option<String>,
+    },
+
     /// Show container status (queries daemon)
     Status {
         /// Container name; omit to list all
@@ -142,6 +148,11 @@ async fn main() -> Result<()> {
             let name = name.unwrap_or_else(|| "dev".into());
             let path = resolve_config(cli.config, Some(&name));
             client::restart(&name, &path.to_string_lossy()).await
+        }
+
+        Command::Reload { name } => {
+            let name = name.unwrap_or_else(|| "dev".into());
+            client::reload(&name).await
         }
 
         Command::Status { name } => {

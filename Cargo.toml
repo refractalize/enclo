@@ -4,5 +4,7 @@ members = [
     "insectjar-proxy",
     "insectjar-proxy-store-common",
     "insectjar-proxy-store-pass",
+    "insectjar-secret-store",
+    "insectjar-secrets",
 ]
 resolver = "2"

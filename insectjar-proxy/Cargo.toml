@@ -9,6 +9,7 @@ path = "src/main.rs"
 
 [dependencies]
 insectjar-proxy-store-common = { path = "../insectjar-proxy-store-common" }
+insectjar-secret-store = { path = "../insectjar-secret-store" }
 
 # async runtime
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "process", "sync", "time", "signal"] }

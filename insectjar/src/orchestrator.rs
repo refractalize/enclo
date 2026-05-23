@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::OsString;
+use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
 use tracing::{info, warn};
@@ -12,20 +13,20 @@ use crate::{
 };
 
 pub struct Orchestrator {
-    modules: Vec<Box<dyn Module>>,
+    pub modules: Vec<Arc<dyn Module>>,
 }
 
 impl Orchestrator {
-    pub fn new(modules: Vec<Box<dyn Module>>) -> Self {
+    pub fn new(modules: Vec<Arc<dyn Module>>) -> Self {
         Self { modules }
     }
 
     /// Returns enabled modules in topological order.
-    fn sorted<'a>(modules: &'a [Box<dyn Module>]) -> Result<Vec<&'a dyn Module>> {
-        let by_name: HashMap<&str, &dyn Module> = modules
+    fn sorted(modules: &[Arc<dyn Module>]) -> Result<Vec<Arc<dyn Module>>> {
+        let by_name: HashMap<&str, Arc<dyn Module>> = modules
             .iter()
             .filter(|m| m.enabled())
-            .map(|m| (m.name(), m.as_ref()))
+            .map(|m| (m.name(), Arc::clone(m)))
             .collect();
         let enabled_set: HashSet<&str> = by_name.keys().copied().collect();
 
@@ -71,7 +72,7 @@ impl Orchestrator {
 
         order
             .into_iter()
-            .filter_map(|name| by_name.get(name).copied())
+            .filter_map(|name| by_name.get(name).map(Arc::clone))
             .collect::<Vec<_>>()
             .pipe(Ok)
     }
@@ -91,7 +92,7 @@ impl Orchestrator {
         create_insectjar_dir(ctx).await?;
 
         let mut combined = ModuleOutput::default();
-        let mut active: Vec<&dyn Module> = Vec::new();
+        let mut active: Vec<Arc<dyn Module>> = Vec::new();
 
         for module in &ordered {
             if !module.supported_platforms().contains(platform) {
@@ -102,7 +103,7 @@ impl Orchestrator {
             match module.setup(ctx).await {
                 Ok(output) => {
                     combined.merge(output);
-                    active.push(*module);
+                    active.push(Arc::clone(module));
                 }
                 Err(e) => {
                     warn!("module {} failed: {:#}", module.name(), e);
@@ -112,7 +113,6 @@ impl Orchestrator {
                     }
                     let err = Err(e).context(format!("module {} setup failed", module.name()));
                     if let Some(tx) = ready {
-                        // Propagate error to daemon before returning
                         let msg = err.as_ref().unwrap_err().to_string();
                         let _ = tx.send(Err(anyhow::anyhow!("{}", msg)));
                     }
@@ -177,6 +177,7 @@ impl Orchestrator {
                 warn!("module {} teardown error: {:#}", m.name(), e);
             }
         }
+
 
         Ok(())
     }

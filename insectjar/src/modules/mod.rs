@@ -4,6 +4,7 @@ mod gpg_agent;
 mod insectjar_proxy;
 mod nvidia;
 mod podman_socket;
+mod secrets;
 mod ssh_agent;
 
 pub use dbus_proxy::DbusProxy;
@@ -12,19 +13,22 @@ pub use gpg_agent::GpgAgent;
 pub use insectjar_proxy::InsectjarProxy;
 pub use nvidia::Nvidia;
 pub use podman_socket::PodmanSocket;
+pub use secrets::Secrets;
 pub use ssh_agent::SshAgent;
 
+use std::sync::Arc;
 use crate::{config::ModulesConfig, module::Module};
 
-pub fn build_registry(config: &ModulesConfig) -> Vec<Box<dyn Module>> {
+pub fn build_registry(config: &ModulesConfig) -> Vec<Arc<dyn Module>> {
     vec![
-        Box::new(PodmanSocket::new(PodmanSocketConfig::clone_from(&config.podman_socket))),
-        Box::new(DockerSocket::new(DockerSocketConfig::clone_from(&config.docker_socket))),
-        Box::new(DbusProxy::new(DbusProxyConfig::clone_from(&config.dbus_proxy))),
-        Box::new(GpgAgent::new(GpgAgentConfig::clone_from(&config.gpg_agent))),
-        Box::new(SshAgent::new(SshAgentConfig::clone_from(&config.ssh_agent))),
-        Box::new(Nvidia::new(NvidiaConfig::clone_from(&config.nvidia))),
-        Box::new(InsectjarProxy::new(config.proxy.clone())),
+        Arc::new(PodmanSocket::new(PodmanSocketConfig::clone_from(&config.podman_socket))),
+        Arc::new(DockerSocket::new(DockerSocketConfig::clone_from(&config.docker_socket))),
+        Arc::new(DbusProxy::new(DbusProxyConfig::clone_from(&config.dbus_proxy))),
+        Arc::new(GpgAgent::new(GpgAgentConfig::clone_from(&config.gpg_agent))),
+        Arc::new(SshAgent::new(SshAgentConfig::clone_from(&config.ssh_agent))),
+        Arc::new(Nvidia::new(NvidiaConfig::clone_from(&config.nvidia))),
+        Arc::new(InsectjarProxy::new(config.proxy.clone())),
+        Arc::new(Secrets::new(config.secrets.clone())),
     ]
 }
 

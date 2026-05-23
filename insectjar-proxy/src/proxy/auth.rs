@@ -33,11 +33,18 @@ impl ProxyAuth {
         let Some((user, password)) = credentials.split_once(':') else { return false; };
 
         if user != self.username {
+            eprintln!("insectjar-proxy: auth rejected: unknown username '{user}'");
             return false;
         }
 
         let Ok(parsed) = PasswordHash::new(&self.password_hash) else { return false; };
-        Argon2::default().verify_password(password.as_bytes(), &parsed).is_ok()
+        let ok = Argon2::default().verify_password(password.as_bytes(), &parsed).is_ok();
+        if ok {
+            eprintln!("insectjar-proxy: auth accepted for '{user}'");
+        } else {
+            eprintln!("insectjar-proxy: auth rejected: wrong password for '{user}'");
+        }
+        ok
     }
 }
 

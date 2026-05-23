@@ -24,7 +24,7 @@ impl SecretString {
             };
             if rc != 0 {
                 eprintln!(
-                    "insectjar-proxy: mlock failed for cached secret ({}); \
+                    "insectjar: mlock failed for cached secret ({}); \
                      memory may be swappable. Consider raising RLIMIT_MEMLOCK.",
                     std::io::Error::last_os_error()
                 );
@@ -41,7 +41,6 @@ impl SecretString {
 impl Drop for SecretString {
     fn drop(&mut self) {
         if !self.0.is_empty() {
-            // munlock before Zeroizing zeroes and frees the allocation.
             unsafe {
                 libc::munlock(self.0.as_ptr() as *const libc::c_void, self.0.len());
             }

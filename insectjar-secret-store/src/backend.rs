@@ -96,7 +96,7 @@ async fn on_exit(client: Arc<BackendClient>) {
         times.push_back(now);
         if times.len() > MAX_RESTARTS {
             eprintln!(
-                "insectjar-proxy: backend '{}' restarted >{} times in {:?}, shutting down",
+                "insectjar: backend '{}' restarted >{} times in {:?}, shutting down",
                 client.binary, MAX_RESTARTS, RESTART_WINDOW
             );
             client.shutdown.notify_waiters();
@@ -104,11 +104,11 @@ async fn on_exit(client: Arc<BackendClient>) {
         }
     }
 
-    eprintln!("insectjar-proxy: backend '{}' exited, restarting", client.binary);
+    eprintln!("insectjar: backend '{}' exited, restarting", client.binary);
 
     match spawn_process(&client.binary, &client.args).await {
         Err(e) => {
-            eprintln!("insectjar-proxy: failed to restart '{}': {e}", client.binary);
+            eprintln!("insectjar: failed to restart '{}': {e}", client.binary);
             client.shutdown.notify_waiters();
         }
         Ok((child, writer, stdout)) => {

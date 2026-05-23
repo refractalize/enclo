@@ -56,6 +56,8 @@ pub struct ModulesConfig {
     pub proxy: InsectjarProxyConfig,
     #[serde(default)]
     pub nvidia: NvidiaConfig,
+    #[serde(default)]
+    pub secrets: SecretsConfig,
 }
 
 #[derive(Debug, Deserialize, Default, Clone)]
@@ -154,6 +156,20 @@ fn default_dbus_interfaces() -> Vec<String> {
     vec!["org.freedesktop.portal.Desktop".into()]
 }
 
+#[derive(Debug, Deserialize, Default, Clone)]
+pub struct SecretsConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Path to the insectjar-secrets binary. Defaults to "insectjar-secrets" (resolved via PATH).
+    #[serde(default = "default_secrets_binary")]
+    pub binary: String,
+    /// Path to the insectjar-secrets config file (store routes, backends, cache, confirm).
+    #[serde(default)]
+    pub config: String,
+}
+
+fn default_secrets_binary() -> String { "insectjar-secrets".into() }
+
 impl Config {
     pub fn load(path: &std::path::Path) -> anyhow::Result<Self> {
         let content = std::fs::read_to_string(path)
@@ -172,6 +188,10 @@ impl Config {
         let c = &self.modules.proxy.config;
         if !c.is_empty() {
             self.modules.proxy.config = resolve_str(base, c);
+        }
+        let c = &self.modules.secrets.config;
+        if !c.is_empty() {
+            self.modules.secrets.config = resolve_str(base, c);
         }
     }
 }

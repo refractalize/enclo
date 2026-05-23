@@ -4,6 +4,7 @@ use tokio::sync::{oneshot, Mutex, RwLock};
 type Pending = Vec<(String, oneshot::Sender<Result<(), String>>)>;
 
 pub struct Confirm {
+    app_name: String,
     settings: RwLock<Settings>,
     batch: Arc<Mutex<Option<Pending>>>,
 }
@@ -14,8 +15,9 @@ struct Settings {
 }
 
 impl Confirm {
-    pub fn new(enabled: bool, debounce_ms: u64) -> Self {
+    pub fn new(app_name: impl Into<String>, enabled: bool, debounce_ms: u64) -> Self {
         Self {
+            app_name: app_name.into(),
             settings: RwLock::new(Settings {
                 enabled,
                 debounce: Duration::from_millis(debounce_ms),
@@ -49,6 +51,7 @@ impl Confirm {
 
         if is_first {
             let batch_ref = Arc::clone(&self.batch);
+            let app_name = self.app_name.clone();
             tokio::spawn(async move {
                 tokio::time::sleep(debounce).await;
                 let mut lock = batch_ref.lock().await;
@@ -56,7 +59,7 @@ impl Confirm {
                 drop(lock);
 
                 let names: Vec<String> = pending.iter().map(|(n, _)| n.clone()).collect();
-                let approved = run_pinentry(&names).await;
+                let approved = run_pinentry(&app_name, &names).await;
 
                 for (_, tx) in pending {
                     let _ = tx.send(if approved { Ok(()) } else { Err("denied by user".into()) });
@@ -68,7 +71,7 @@ impl Confirm {
     }
 }
 
-async fn run_pinentry(names: &[String]) -> bool {
+async fn run_pinentry(app_name: &str, names: &[String]) -> bool {
     let list = names
         .iter()
         .map(|n| format!("  {n}"))
@@ -76,7 +79,7 @@ async fn run_pinentry(names: &[String]) -> bool {
         .join("\n");
 
     let desc = format!(
-        "insectjar-proxy wants to access the following secrets:%0A%0A{}\n\nAllow?",
+        "{app_name} wants to access the following secrets:%0A%0A{}\n\nAllow?",
         list.replace(' ', "%20").replace('\n', "%0A")
     );
 
@@ -88,7 +91,7 @@ async fn run_pinentry(names: &[String]) -> bool {
     {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("insectjar-proxy: failed to spawn pinentry: {e}");
+            eprintln!("insectjar: failed to spawn pinentry: {e}");
             return false;
         }
     };
@@ -104,12 +107,12 @@ async fn run_pinentry(names: &[String]) -> bool {
     macro_rules! send {
         ($cmd:expr) => {{
             if let Err(e) = writer.write_all($cmd.as_bytes()).await {
-                eprintln!("insectjar-proxy: pinentry write error: {e}");
+                eprintln!("insectjar: pinentry write error: {e}");
                 return false;
             }
             line.clear();
             if let Err(e) = reader.read_line(&mut line).await {
-                eprintln!("insectjar-proxy: pinentry read error: {e}");
+                eprintln!("insectjar: pinentry read error: {e}");
                 return false;
             }
         }};

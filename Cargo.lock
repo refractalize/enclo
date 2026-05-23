@@ -953,6 +953,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "insectjar-proxy-store-common",
+ "insectjar-secret-store",
  "libc",
  "pinentry",
  "rand_core",
@@ -985,6 +986,37 @@ version = "0.1.0"
 dependencies = [
  "insectjar-proxy-store-common",
  "tokio",
+]
+
+[[package]]
+name = "insectjar-secret-store"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "humantime-serde",
+ "insectjar-proxy-store-common",
+ "libc",
+ "serde",
+ "tokio",
+ "toml",
+ "wildmatch",
+ "zeroize",
+]
+
+[[package]]
+name = "insectjar-secrets"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "dirs-next",
+ "insectjar-proxy-store-common",
+ "insectjar-secret-store",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml",
+ "wildmatch",
 ]
 
 [[package]]

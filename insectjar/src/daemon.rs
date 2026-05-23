@@ -9,6 +9,7 @@ use zbus::{connection, interface};
 use crate::{
     config::Config,
     context::Context,
+    module::Module,
     modules,
     orchestrator::Orchestrator,
 };
@@ -36,7 +37,8 @@ impl ContainerStatus {
 
 struct ContainerEntry {
     status_tx: watch::Sender<ContainerStatus>,
-    // Handle to cancel the running task
+    reloadable: Vec<Arc<dyn Module>>,
+    ctx: Context,
     _task: tokio::task::JoinHandle<()>,
 }
 
@@ -72,12 +74,39 @@ impl Manager {
         Ok((config, ctx))
     }
 
+    /// Stop all running containers and wait for their tasks to finish teardown.
+    async fn stop_all(&self) {
+        let names: Vec<String> = self.inner.lock().await.containers.keys().cloned().collect();
+        for name in &names {
+            if let Ok(ctx) = Context::new(name.clone()) {
+                let _ = crate::podman::stop(&ctx.container_name).await;
+            }
+        }
+        // Wait for tasks to remove themselves from the map (they do so after teardown).
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            if tokio::time::Instant::now() >= deadline {
+                warn!("daemon: timed out waiting for containers to stop");
+                break;
+            }
+            if self.inner.lock().await.containers.is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    }
+
     /// Spawn a container task. Returns a watch receiver; the task signals
     /// Running via the oneshot then continues until the container exits.
     async fn spawn_start(&self, name: String, config_path: Option<&str>) -> Result<watch::Receiver<ContainerStatus>> {
         let (config, ctx) = self.load(&name, config_path).await?;
         let modules = modules::build_registry(&config.modules);
+        let reloadable: Vec<Arc<dyn Module>> = modules.iter()
+            .filter(|m| m.enabled() && m.can_reload())
+            .map(Arc::clone)
+            .collect();
         let orch = Orchestrator::new(modules);
+        let ctx_for_entry = ctx.clone();
 
         let (status_tx, rx) = watch::channel(ContainerStatus::Starting);
         let status_tx2 = status_tx.clone();
@@ -126,6 +155,8 @@ impl Manager {
 
         self.inner.lock().await.containers.insert(name.clone(), ContainerEntry {
             status_tx,
+            reloadable,
+            ctx: ctx_for_entry,
             _task: task,
         });
 
@@ -243,6 +274,30 @@ impl Manager {
         self.start(name, config_path).await
     }
 
+    async fn reload(&self, name: String) -> zbus::fdo::Result<()> {
+        let (reloadable, ctx) = {
+            let guard = self.inner.lock().await;
+            let entry = guard.containers.get(&name)
+                .ok_or_else(|| zbus::fdo::Error::Failed(
+                    format!("container '{}' is not running", name)
+                ))?;
+            (entry.reloadable.clone(), entry.ctx.clone())
+        };
+
+        let mut errors: Vec<String> = Vec::new();
+        for module in &reloadable {
+            if let Err(e) = module.reload(&ctx).await {
+                errors.push(format!("{}: {:#}", module.name(), e));
+            }
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(zbus::fdo::Error::Failed(errors.join("; ")))
+        }
+    }
+
     async fn ensure_running(&self, name: String, config_path: String) -> zbus::fdo::Result<()> {
         let already_running = {
             let guard = self.inner.lock().await;
@@ -263,14 +318,19 @@ pub async fn run_daemon(config_dir: std::path::PathBuf) -> Result<()> {
 
     let _conn = connection::Builder::session()?
         .name("org.insectjar")?
-        .serve_at("/org/insectjar", manager)?
+        .serve_at("/org/insectjar", manager.clone())?
         .build()
         .await?;
 
     info!("daemon: ready");
 
-    // Block until SIGTERM/Ctrl-C
-    tokio::signal::ctrl_c().await?;
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {}
+        _ = sigterm.recv() => {}
+    }
+
     info!("daemon: shutting down");
+    manager.stop_all().await;
     Ok(())
 }
