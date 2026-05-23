@@ -23,10 +23,10 @@ impl SecretString {
                 libc::mlock(z.as_ptr() as *const libc::c_void, z.len())
             };
             if rc != 0 {
-                eprintln!(
-                    "insectjar: mlock failed for cached secret ({}); \
-                     memory may be swappable. Consider raising RLIMIT_MEMLOCK.",
-                    std::io::Error::last_os_error()
+                tracing::warn!(
+                    error = %std::io::Error::last_os_error(),
+                    "mlock failed for cached secret; memory may be swappable. \
+                     Consider raising RLIMIT_MEMLOCK."
                 );
             }
         }

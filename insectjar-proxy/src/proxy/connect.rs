@@ -25,7 +25,7 @@ pub async fn tunnel(
     tls: Arc<TlsState>,
 ) {
     if let Err(e) = tunnel_inner(upgraded, &host, port, config, store, tls).await {
-        eprintln!("insectjar-proxy: CONNECT tunnel error for {host}:{port}: {e}");
+        tracing::warn!("CONNECT tunnel error for {host}:{port}: {e}");
     }
 }
 
@@ -49,7 +49,7 @@ async fn tunnel_inner(
 
     tokio::spawn(async move {
         if let Err(e) = upstream_conn.await {
-            eprintln!("insectjar-proxy: upstream connection error: {e}");
+            tracing::warn!("upstream connection error: {e}");
         }
     });
 
@@ -71,7 +71,7 @@ async fn tunnel_inner(
                         .await
                         .map_err(|e| anyhow::anyhow!(e))?;
 
-                    strip_hop_by_hop(req.headers_mut());
+                    super::strip_hop_by_hop(req.headers_mut());
 
                     let mut s = sender.lock().await;
                     s.ready().await.map_err(|e| anyhow::anyhow!(e))?;
@@ -83,18 +83,4 @@ async fn tunnel_inner(
         )
         .await
         .map_err(|e| anyhow::anyhow!(e))
-}
-
-fn strip_hop_by_hop(headers: &mut ::http::HeaderMap) {
-    for name in &[
-        ::http::header::CONNECTION,
-        ::http::header::TRANSFER_ENCODING,
-        ::http::header::TE,
-        ::http::header::TRAILER,
-        ::http::header::UPGRADE,
-        ::http::header::HeaderName::from_static("proxy-connection"),
-        ::http::header::HeaderName::from_static("keep-alive"),
-    ] {
-        headers.remove(name);
-    }
 }

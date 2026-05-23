@@ -137,15 +137,19 @@ async fn run_proxy(config_path: PathBuf, cli_auth: Option<config::ProxyAuthConfi
     let (config_tx, config_rx) = watch::channel(Arc::new(config));
 
     let proxy_auth = if let Some(auth) = cli_auth.as_ref() {
-        Some(proxy::auth::ProxyAuth::new(auth))
+        Some(proxy::auth::ProxyAuth::new(auth)
+            .map_err(|e| anyhow::anyhow!("proxy auth config error: {e}"))?)
     } else {
         let config = config_rx.borrow();
-        config.proxy_auth.as_ref().map(proxy::auth::ProxyAuth::new)
+        config.proxy_auth.as_ref()
+            .map(|a| proxy::auth::ProxyAuth::new(a)
+                .map_err(|e| anyhow::anyhow!("proxy auth config error: {e}")))
+            .transpose()?
     };
 
-    eprintln!("insectjar-proxy: listening on {}", config_rx.borrow().listen);
+    tracing::info!("listening on {}", config_rx.borrow().listen);
     if proxy_auth.is_some() {
-        eprintln!("insectjar-proxy: proxy authentication enabled");
+        tracing::info!("proxy authentication enabled");
     }
 
     let shutdown_clone = Arc::clone(&shutdown);
@@ -166,7 +170,7 @@ async fn run_proxy(config_path: PathBuf, cli_auth: Option<config::ProxyAuthConfi
                 let (stream, peer) = match result {
                     Ok(v) => v,
                     Err(e) => {
-                        eprintln!("insectjar-proxy: accept error: {e}");
+                        tracing::warn!("accept error: {e}");
                         continue;
                     }
                 };
@@ -197,24 +201,24 @@ async fn run_proxy(config_path: PathBuf, cli_auth: Option<config::ProxyAuthConfi
                         .with_upgrades()
                         .await
                     {
-                        eprintln!("insectjar-proxy: connection error from {peer}: {e}");
+                        tracing::warn!("connection error from {peer}: {e}");
                     }
                 });
             }
 
             _ = sighup.recv() => {
                 match config::Config::from_file(&config_path) {
-                    Err(e) => eprintln!("insectjar-proxy: config reload failed: {e}"),
+                    Err(e) => tracing::warn!("config reload failed: {e}"),
                     Ok(new_config) => {
                         store.reload(&new_config.store).await;
                         config_tx.send(Arc::new(new_config)).ok();
-                        eprintln!("insectjar-proxy: config reloaded");
+                        tracing::info!("config reloaded");
                     }
                 }
             }
 
             _ = shutdown.notified() => {
-                eprintln!("insectjar-proxy: shutting down");
+                tracing::info!("shutting down");
                 break;
             }
         }

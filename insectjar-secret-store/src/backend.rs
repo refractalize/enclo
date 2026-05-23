@@ -69,10 +69,11 @@ impl BackendClient {
 
         {
             let mut inner = self.inner.lock().await;
-            if inner.writer.write_all(&bytes).await.is_err()
-                || inner.writer.flush().await.is_err()
-            {
-                // Error surfaced via the pending channel when the reader task exits.
+            let write_ok = inner.writer.write_all(&bytes).await.is_ok()
+                && inner.writer.flush().await.is_ok();
+            if !write_ok {
+                self.pending.lock().await.remove(&id);
+                return Err("failed to send request to backend process".into());
             }
         }
 
@@ -98,20 +99,20 @@ async fn on_exit(client: Arc<BackendClient>) {
         times.retain(|t| now.duration_since(*t) < RESTART_WINDOW);
         times.push_back(now);
         if times.len() > MAX_RESTARTS {
-            eprintln!(
-                "insectjar: backend '{}' restarted >{} times in {:?}, shutting down",
-                client.binary, MAX_RESTARTS, RESTART_WINDOW
+            tracing::error!(
+                binary = client.binary.as_str(),
+                "backend restarted >{MAX_RESTARTS} times in {RESTART_WINDOW:?}, shutting down"
             );
             client.shutdown.notify_waiters();
             return;
         }
     }
 
-    eprintln!("insectjar: backend '{}' exited, restarting", client.binary);
+    tracing::warn!(binary = client.binary.as_str(), "backend exited, restarting");
 
     match spawn_process(&client.binary, &client.args, &client.env).await {
         Err(e) => {
-            eprintln!("insectjar: failed to restart '{}': {e}", client.binary);
+            tracing::error!(binary = client.binary.as_str(), "failed to restart backend: {e}");
             client.shutdown.notify_waiters();
         }
         Ok((child, writer, stdout)) => {

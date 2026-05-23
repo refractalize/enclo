@@ -73,7 +73,7 @@ impl Module for Secrets {
         let binary_path = resolve_binary_path("insectjar-secrets").await?;
 
         tracing::info!("starting insectjar-secrets");
-        let child = tokio::process::Command::new("insectjar-secrets")
+        let child = tokio::process::Command::new(&binary_path)
             .args([
                 "serve",
                 "--socket", &socket_path.to_string_lossy(),

@@ -70,11 +70,10 @@ impl Orchestrator {
             anyhow::bail!("cycle detected in module dependencies");
         }
 
-        order
+        Ok(order
             .into_iter()
             .filter_map(|name| by_name.get(name).map(Arc::clone))
-            .collect::<Vec<_>>()
-            .pipe(Ok)
+            .collect())
     }
 
     /// Start the container. If `ready` is provided, it is resolved once the
@@ -427,13 +426,3 @@ fn format_args_preview(args: &[OsString]) -> String {
         .join(" ")
 }
 
-trait Pipe: Sized {
-    fn pipe<F, R>(self, f: F) -> R
-    where
-        F: FnOnce(Self) -> R,
-    {
-        f(self)
-    }
-}
-
-impl<T> Pipe for T {}

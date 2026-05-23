@@ -50,7 +50,7 @@ async fn handle_connect(
             Ok(upgraded) => {
                 connect::tunnel(upgraded, host, port, config, store, tls).await;
             }
-            Err(e) => eprintln!("insectjar-proxy: upgrade error: {e}"),
+            Err(e) => tracing::warn!("upgrade error: {e}"),
         }
     });
 
@@ -62,6 +62,20 @@ fn parse_connect_authority(uri: &::http::Uri) -> Option<(String, u16)> {
     let host = authority.host().to_string();
     let port = authority.port_u16().unwrap_or(443);
     Some((host, port))
+}
+
+pub(super) fn strip_hop_by_hop(headers: &mut ::http::HeaderMap) {
+    for name in &[
+        ::http::header::CONNECTION,
+        ::http::header::TRANSFER_ENCODING,
+        ::http::header::TE,
+        ::http::header::TRAILER,
+        ::http::header::UPGRADE,
+        ::http::header::HeaderName::from_static("proxy-connection"),
+        ::http::header::HeaderName::from_static("keep-alive"),
+    ] {
+        headers.remove(name);
+    }
 }
 
 fn error_response(status: StatusCode, msg: &str) -> BoxResponse {

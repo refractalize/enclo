@@ -29,7 +29,7 @@ pub async fn run(socket_path: PathBuf, config_path: PathBuf, config: Config) -> 
     let listener = UnixListener::bind(&socket_path)
         .map_err(|e| anyhow::anyhow!("failed to bind {}: {e}", socket_path.display()))?;
 
-    eprintln!("insectjar-secrets: listening on {}", socket_path.display());
+    tracing::info!("listening on {}", socket_path.display());
 
     let shutdown_clone = Arc::clone(&shutdown);
     tokio::spawn(async move {
@@ -53,7 +53,7 @@ pub async fn run(socket_path: PathBuf, config_path: PathBuf, config: Config) -> 
                         tokio::spawn(handle_connection(stream, store, policy));
                     }
                     Err(e) => {
-                        eprintln!("insectjar-secrets: accept error: {e}");
+                        tracing::warn!("accept error: {e}");
                         continue;
                     }
                 }
@@ -61,13 +61,13 @@ pub async fn run(socket_path: PathBuf, config_path: PathBuf, config: Config) -> 
 
             _ = sighup.recv() => {
                 match reload_config(&config_path, &store, &policy).await {
-                    Ok(()) => eprintln!("insectjar-secrets: config reloaded"),
-                    Err(e) => eprintln!("insectjar-secrets: config reload failed: {e:#}"),
+                    Ok(()) => tracing::info!("config reloaded"),
+                    Err(e) => tracing::warn!("config reload failed: {e:#}"),
                 }
             }
 
             _ = shutdown.notified() => {
-                eprintln!("insectjar-secrets: shutting down");
+                tracing::info!("shutting down");
                 break;
             }
         }

@@ -70,13 +70,13 @@ pub struct InsectjarProxyConfig {
     pub config: String,
 }
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Default, Clone)]
 pub struct NvidiaConfig {
     #[serde(default)]
     pub enabled: bool,
 }
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Default, Clone)]
 pub struct PodmanSocketConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -84,7 +84,7 @@ pub struct PodmanSocketConfig {
     pub socket_path: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct DockerSocketConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -103,13 +103,13 @@ fn default_docker_socket_path() -> String {
 }
 
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Default, Clone)]
 pub struct GpgAgentConfig {
     #[serde(default)]
     pub enabled: bool,
 }
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Default, Clone)]
 pub struct SshAgentConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -134,7 +134,7 @@ pub enum SshBackend {
 
 
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Default, Clone)]
 pub struct DbusProxyConfig {
     #[serde(default)]
     pub enabled: bool,

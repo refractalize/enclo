@@ -97,7 +97,7 @@ async fn run_pinentry(app_name: &str, names: &[String]) -> bool {
     {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("insectjar: failed to spawn pinentry: {e}");
+            tracing::error!("failed to spawn pinentry: {e}");
             return false;
         }
     };
@@ -110,23 +110,37 @@ async fn run_pinentry(app_name: &str, names: &[String]) -> bool {
     let mut writer = stdin;
     let mut line = String::new();
 
-    macro_rules! send {
-        ($cmd:expr) => {{
-            if let Err(e) = writer.write_all($cmd.as_bytes()).await {
-                eprintln!("insectjar: pinentry write error: {e}");
+    // Read lines from pinentry, skipping Assuan informational "S " lines,
+    // until we get the first OK/ERR/other terminal response.
+    async fn read_response(reader: &mut tokio::io::BufReader<tokio::process::ChildStdout>, line: &mut String) -> bool {
+        loop {
+            line.clear();
+            if reader.read_line(line).await.is_err() {
                 return false;
             }
-            line.clear();
-            if let Err(e) = reader.read_line(&mut line).await {
-                eprintln!("insectjar: pinentry read error: {e}");
+            if !line.starts_with("S ") {
+                return true;
+            }
+        }
+    }
+
+    // Consume the initial greeting.
+    if !read_response(&mut reader, &mut line).await {
+        return false;
+    }
+
+    // Send a command and read the response, skipping informational lines.
+    macro_rules! send {
+        ($cmd:expr) => {{
+            if writer.write_all($cmd.as_bytes()).await.is_err() {
+                tracing::warn!("pinentry write error");
+                return false;
+            }
+            if !read_response(&mut reader, &mut line).await {
+                tracing::warn!("pinentry read error");
                 return false;
             }
         }};
-    }
-
-    line.clear();
-    if reader.read_line(&mut line).await.is_err() {
-        return false;
     }
 
     send!(format!("SETDESC {desc}\n"));

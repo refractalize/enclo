@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use anyhow::anyhow;
 use argon2::{Argon2, PasswordHash, PasswordVerifier};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use ::http::{Request, Response, StatusCode};
@@ -13,13 +14,16 @@ pub struct ProxyAuth {
 }
 
 impl ProxyAuth {
-    pub fn new(config: &ProxyAuthConfig) -> Arc<Self> {
-        Arc::new(Self {
+    /// Parses and validates `password_hash` at construction time so a bad config
+    /// fails at startup rather than silently rejecting every request.
+    pub fn new(config: &ProxyAuthConfig) -> anyhow::Result<Arc<Self>> {
+        PasswordHash::new(&config.password_hash)
+            .map_err(|e| anyhow!("invalid password_hash in proxy auth config: {e}"))?;
+        Ok(Arc::new(Self {
             username: config.username.clone(),
             password_hash: config.password_hash.clone(),
-        })
+        }))
     }
-
 
     /// Returns true if the request carries valid proxy credentials.
     pub fn verify<B>(&self, req: &Request<B>) -> bool {
@@ -33,16 +37,16 @@ impl ProxyAuth {
         let Some((user, password)) = credentials.split_once(':') else { return false; };
 
         if user != self.username {
-            eprintln!("insectjar-proxy: auth rejected: unknown username '{user}'");
+            tracing::warn!("proxy auth rejected: invalid credentials");
             return false;
         }
 
         let Ok(parsed) = PasswordHash::new(&self.password_hash) else { return false; };
         let ok = Argon2::default().verify_password(password.as_bytes(), &parsed).is_ok();
         if ok {
-            eprintln!("insectjar-proxy: auth accepted for '{user}'");
+            tracing::debug!(user, "proxy auth accepted");
         } else {
-            eprintln!("insectjar-proxy: auth rejected: wrong password for '{user}'");
+            tracing::warn!("proxy auth rejected: invalid credentials");
         }
         ok
     }

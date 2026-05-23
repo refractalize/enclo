@@ -1,5 +1,5 @@
-use std::sync::Arc;
-use dashmap::DashMap;
+use std::{num::NonZeroUsize, sync::{Arc, Mutex}};
+use lru::LruCache;
 use rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair};
 use rustls::{
     pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer},
@@ -7,10 +7,12 @@ use rustls::{
 };
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 
+const CERT_CACHE_SIZE: usize = 500;
+
 pub struct TlsState {
     ca_cert: rcgen::Certificate,
     ca_key: KeyPair,
-    cert_cache: DashMap<String, Arc<ServerConfig>>,
+    cert_cache: Mutex<LruCache<String, Arc<ServerConfig>>>,
     pub connector: TlsConnector,
 }
 
@@ -38,17 +40,17 @@ impl TlsState {
         Ok(Arc::new(Self {
             ca_cert,
             ca_key,
-            cert_cache: DashMap::new(),
+            cert_cache: Mutex::new(LruCache::new(NonZeroUsize::new(CERT_CACHE_SIZE).unwrap())),
             connector,
         }))
     }
 
     pub fn acceptor_for(&self, hostname: &str) -> anyhow::Result<TlsAcceptor> {
-        if let Some(cfg) = self.cert_cache.get(hostname) {
-            return Ok(TlsAcceptor::from(Arc::clone(&cfg)));
+        if let Some(cfg) = self.cert_cache.lock().unwrap().get(hostname) {
+            return Ok(TlsAcceptor::from(Arc::clone(cfg)));
         }
         let cfg = Arc::new(self.build_server_config(hostname)?);
-        self.cert_cache.insert(hostname.to_string(), Arc::clone(&cfg));
+        self.cert_cache.lock().unwrap().put(hostname.to_string(), Arc::clone(&cfg));
         Ok(TlsAcceptor::from(cfg))
     }
 

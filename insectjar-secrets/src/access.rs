@@ -32,6 +32,12 @@ pub struct AccessPolicy {
 
 impl AccessPolicy {
     pub fn new(config: &AccessConfig) -> Self {
+        if matches!(config.mode, AccessMode::AllowAll) && !config.allow.is_empty() {
+            tracing::warn!(
+                "access.allow is set but access.mode is \"allow-all\"; \
+                 the allow list has no effect in allow-all mode"
+            );
+        }
         Self {
             mode: config.mode.clone(),
             allow: config.allow.iter().map(|p| WildMatch::new(p)).collect(),

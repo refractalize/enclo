@@ -39,7 +39,7 @@ pub async fn handle(
         return bad_gateway(&format!("credential injection failed: {e}"));
     }
 
-    strip_hop_by_hop(req.headers_mut());
+    super::strip_hop_by_hop(req.headers_mut());
 
     match client.request(req).await {
         Ok(resp) => {
@@ -47,19 +47,5 @@ pub async fn handle(
             Response::from_parts(parts, body.boxed())
         }
         Err(e) => bad_gateway(&format!("upstream error: {e}")),
-    }
-}
-
-fn strip_hop_by_hop(headers: &mut ::http::HeaderMap) {
-    for name in &[
-        ::http::header::CONNECTION,
-        ::http::header::TRANSFER_ENCODING,
-        ::http::header::TE,
-        ::http::header::TRAILER,
-        ::http::header::UPGRADE,
-        ::http::header::HeaderName::from_static("proxy-connection"),
-        ::http::header::HeaderName::from_static("keep-alive"),
-    ] {
-        headers.remove(name);
     }
 }
