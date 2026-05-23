@@ -6,5 +6,5 @@ BIN_DIR="${HOME}/.local/bin"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TARGET_DIR="${SCRIPT_DIR}/../target/release"
 
-install -Dm755 "${TARGET_DIR}/insectjar-proxy-store-pass" "${BIN_DIR}/insectjar-proxy-store-pass"
-echo "installed: ${BIN_DIR}/insectjar-proxy-store-pass"
+install -Dm755 "${TARGET_DIR}/insectjar-aws-credentials" "${BIN_DIR}/insectjar-aws-credentials"
+echo "installed: ${BIN_DIR}/insectjar-aws-credentials"

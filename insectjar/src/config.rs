@@ -58,20 +58,17 @@ pub struct ModulesConfig {
     pub nvidia: NvidiaConfig,
     #[serde(default)]
     pub secrets: SecretsConfig,
+    #[serde(default)]
+    pub aws_credentials: AwsCredentialsConfig,
 }
 
 #[derive(Debug, Deserialize, Default, Clone)]
 pub struct InsectjarProxyConfig {
     #[serde(default)]
     pub enabled: bool,
-    /// Path to the insectjar-proxy binary. Defaults to "insectjar-proxy" (i.e. resolved via PATH).
-    #[serde(default = "default_proxy_binary")]
-    pub binary: String,
     /// Path to the base insectjar-proxy config file.
     pub config: String,
 }
-
-fn default_proxy_binary() -> String { "insectjar-proxy".into() }
 
 #[derive(Debug, Deserialize, Default)]
 pub struct NvidiaConfig {
@@ -160,15 +157,16 @@ fn default_dbus_interfaces() -> Vec<String> {
 pub struct SecretsConfig {
     #[serde(default)]
     pub enabled: bool,
-    /// Path to the insectjar-secrets binary. Defaults to "insectjar-secrets" (resolved via PATH).
-    #[serde(default = "default_secrets_binary")]
-    pub binary: String,
     /// Path to the insectjar-secrets config file (store routes, backends, cache, confirm).
     #[serde(default)]
     pub config: String,
 }
 
-fn default_secrets_binary() -> String { "insectjar-secrets".into() }
+#[derive(Debug, Deserialize, Default, Clone)]
+pub struct AwsCredentialsConfig {
+    #[serde(default)]
+    pub enabled: bool,
+}
 
 impl Config {
     pub fn load(path: &std::path::Path) -> anyhow::Result<Self> {

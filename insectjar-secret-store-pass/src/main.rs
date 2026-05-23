@@ -4,7 +4,7 @@ use tokio::process::Command;
 #[tokio::main]
 async fn main() {
     if let Err(e) = server::run(handle).await {
-        eprintln!("insectjar-proxy-store-pass: {e}");
+        eprintln!("insectjar-secret-store-pass: {e}");
         std::process::exit(1);
     }
 }

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::time::Duration;
 use serde::Deserialize;
 use wildmatch::WildMatch;
@@ -44,6 +45,8 @@ pub struct BackendConfig {
     pub name: String,
     #[serde(default)]
     pub args: Vec<String>,
+    #[serde(default)]
+    pub env: HashMap<String, String>,
 }
 
 impl StoreConfig {

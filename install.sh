@@ -8,5 +8,7 @@ cargo build --release --manifest-path "${SCRIPT_DIR}/Cargo.toml"
 
 bash "${SCRIPT_DIR}/insectjar/install.sh"
 bash "${SCRIPT_DIR}/insectjar-proxy/install.sh"
-bash "${SCRIPT_DIR}/insectjar-proxy-store-pass/install.sh"
+bash "${SCRIPT_DIR}/insectjar-secret-store-pass/install.sh"
+bash "${SCRIPT_DIR}/insectjar-secret-store-aws-vault/install.sh"
 bash "${SCRIPT_DIR}/insectjar-secrets/install.sh"
+bash "${SCRIPT_DIR}/insectjar-aws-credentials/install.sh"

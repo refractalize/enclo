@@ -3,8 +3,10 @@ members = [
     "insectjar",
     "insectjar-proxy",
     "insectjar-proxy-store-common",
-    "insectjar-proxy-store-pass",
     "insectjar-secret-store",
+    "insectjar-secret-store-pass",
+    "insectjar-secret-store-aws-vault",
     "insectjar-secrets",
+    "insectjar-aws-credentials",
 ]
 resolver = "2"

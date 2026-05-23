@@ -112,10 +112,10 @@ impl Module for InsectjarProxy {
         let password = random_password();
 
         tracing::info!("generating insectjar-proxy basic auth credentials");
-        let password_hash = generate_password_hash(&self.config.binary, &password).await?;
+        let password_hash = generate_password_hash("insectjar-proxy", &password).await?;
 
         tracing::info!("starting insectjar-proxy");
-        let child = tokio::process::Command::new(&self.config.binary)
+        let child = tokio::process::Command::new("insectjar-proxy")
             .args([
                 "serve",
                 "--config", &self.config.config,

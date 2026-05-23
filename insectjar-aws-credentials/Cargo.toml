@@ -1,0 +1,16 @@
+[package]
+name = "insectjar-aws-credentials"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "insectjar-aws-credentials"
+path = "src/main.rs"
+
+[dependencies]
+insectjar-proxy-store-common = { path = "../insectjar-proxy-store-common" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util"] }
+clap = { version = "4", features = ["derive"] }
+serde_json = "1"
+urlencoding = "2"
+anyhow = "1"

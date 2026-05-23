@@ -59,7 +59,13 @@ impl Confirm {
                 drop(lock);
 
                 let names: Vec<String> = pending.iter().map(|(n, _)| n.clone()).collect();
+                tracing::info!(secrets = ?names, "confirmation requested");
                 let approved = run_pinentry(&app_name, &names).await;
+                if approved {
+                    tracing::info!(secrets = ?names, "confirmation approved");
+                } else {
+                    tracing::info!(secrets = ?names, "confirmation denied");
+                }
 
                 for (_, tx) in pending {
                     let _ = tx.send(if approved { Ok(()) } else { Err("denied by user".into()) });

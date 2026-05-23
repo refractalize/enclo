@@ -21,9 +21,9 @@ impl StoreStack {
     ) -> anyhow::Result<Self> {
         let mut backends = HashMap::new();
         for backend_cfg in &config.backends {
-            let binary = format!("insectjar-proxy-store-{}", backend_cfg.name);
+            let binary = format!("insectjar-secret-store-{}", backend_cfg.name);
             let client =
-                BackendClient::spawn(&binary, &backend_cfg.args, Arc::clone(&shutdown)).await?;
+                BackendClient::spawn(&binary, &backend_cfg.args, &backend_cfg.env, Arc::clone(&shutdown)).await?;
             backends.insert(backend_cfg.name.clone(), client);
         }
 
@@ -50,8 +50,11 @@ impl StoreStack {
     }
 
     pub async fn get(&self, name: &str) -> Result<String, String> {
+        tracing::info!(secret = name, "secret requested");
+
         if let Some(cache) = &self.cache {
             if let Some(value) = cache.get(name).await {
+                tracing::debug!(secret = name, "secret served from cache");
                 return Ok(value);
             }
         }

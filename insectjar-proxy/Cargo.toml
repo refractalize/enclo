@@ -45,6 +45,10 @@ pinentry = "0.5"
 # time
 humantime-serde = "1"
 
+# logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
 # error handling
 anyhow = "1"
 

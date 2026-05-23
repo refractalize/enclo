@@ -26,6 +26,7 @@ struct Inner {
 pub struct BackendClient {
     binary: String,
     args: Vec<String>,
+    env: HashMap<String, String>,
     inner: Mutex<Inner>,
     pending: PendingMap,
     next_id: AtomicU64,
@@ -37,14 +38,16 @@ impl BackendClient {
     pub async fn spawn(
         binary: &str,
         args: &[String],
+        env: &HashMap<String, String>,
         shutdown: Arc<Notify>,
     ) -> anyhow::Result<Arc<Self>> {
-        let (child, writer, stdout) = spawn_process(binary, args).await?;
+        let (child, writer, stdout) = spawn_process(binary, args, env).await?;
         let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
 
         let client = Arc::new(Self {
             binary: binary.to_string(),
             args: args.to_vec(),
+            env: env.clone(),
             inner: Mutex::new(Inner { child, writer }),
             pending,
             next_id: AtomicU64::new(0),
@@ -106,7 +109,7 @@ async fn on_exit(client: Arc<BackendClient>) {
 
     eprintln!("insectjar: backend '{}' exited, restarting", client.binary);
 
-    match spawn_process(&client.binary, &client.args).await {
+    match spawn_process(&client.binary, &client.args, &client.env).await {
         Err(e) => {
             eprintln!("insectjar: failed to restart '{}': {e}", client.binary);
             client.shutdown.notify_waiters();
@@ -125,9 +128,11 @@ async fn on_exit(client: Arc<BackendClient>) {
 async fn spawn_process(
     binary: &str,
     args: &[String],
+    env: &HashMap<String, String>,
 ) -> anyhow::Result<(Child, BufWriter<ChildStdin>, ChildStdout)> {
     let mut child = Command::new(binary)
         .args(args)
+        .envs(env)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::inherit())

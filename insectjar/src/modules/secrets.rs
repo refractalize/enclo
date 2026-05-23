@@ -70,10 +70,10 @@ impl Module for Secrets {
         }
 
         let socket_path = ctx.insectjar_dir.join("secrets.sock");
-        let binary_path = resolve_binary_path(&self.config.binary).await?;
+        let binary_path = resolve_binary_path("insectjar-secrets").await?;
 
         tracing::info!("starting insectjar-secrets");
-        let child = tokio::process::Command::new(&self.config.binary)
+        let child = tokio::process::Command::new("insectjar-secrets")
             .args([
                 "serve",
                 "--socket", &socket_path.to_string_lossy(),
@@ -89,7 +89,7 @@ impl Module for Secrets {
         let mut out = ModuleOutput::default();
         out.volumes.push(VolumeMount::new(&socket_path, "/run/insectjar-secrets.sock"));
         out.volumes.push(
-            VolumeMount::new(&binary_path, "/usr/bin/insectjar-secrets").with_options("ro"),
+            VolumeMount::new(&binary_path, "/usr/local/bin/insectjar-secrets").with_options("ro"),
         );
         Ok(out)
     }

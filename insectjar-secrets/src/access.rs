@@ -40,10 +40,11 @@ impl AccessPolicy {
     }
 
     pub fn is_permitted(&self, name: &str) -> bool {
+        let path = name.split('?').next().unwrap_or(name);
         match self.mode {
-            AccessMode::DenyAll => self.allow.iter().any(|p| p.matches(name))
-                && !self.deny.iter().any(|p| p.matches(name)),
-            AccessMode::AllowAll => !self.deny.iter().any(|p| p.matches(name)),
+            AccessMode::DenyAll => self.allow.iter().any(|p| p.matches(path))
+                && !self.deny.iter().any(|p| p.matches(path)),
+            AccessMode::AllowAll => !self.deny.iter().any(|p| p.matches(path)),
         }
     }
 }

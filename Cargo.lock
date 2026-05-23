@@ -937,6 +937,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "insectjar-aws-credentials"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "insectjar-proxy-store-common",
+ "serde_json",
+ "tokio",
+ "urlencoding",
+]
+
+[[package]]
 name = "insectjar-proxy"
 version = "0.1.0"
 dependencies = [
@@ -967,6 +979,8 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "toml",
+ "tracing",
+ "tracing-subscriber",
  "wildmatch",
  "zeroize",
 ]
@@ -981,14 +995,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "insectjar-proxy-store-pass"
-version = "0.1.0"
-dependencies = [
- "insectjar-proxy-store-common",
- "tokio",
-]
-
-[[package]]
 name = "insectjar-secret-store"
 version = "0.1.0"
 dependencies = [
@@ -999,8 +1005,26 @@ dependencies = [
  "serde",
  "tokio",
  "toml",
+ "tracing",
  "wildmatch",
  "zeroize",
+]
+
+[[package]]
+name = "insectjar-secret-store-aws-vault"
+version = "0.1.0"
+dependencies = [
+ "insectjar-proxy-store-common",
+ "tokio",
+ "urlencoding",
+]
+
+[[package]]
+name = "insectjar-secret-store-pass"
+version = "0.1.0"
+dependencies = [
+ "insectjar-proxy-store-common",
+ "tokio",
 ]
 
 [[package]]
@@ -1016,6 +1040,8 @@ dependencies = [
  "serde_json",
  "tokio",
  "toml",
+ "tracing",
+ "tracing-subscriber",
  "wildmatch",
 ]
 
@@ -2076,6 +2102,12 @@ name = "untrusted"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
+
+[[package]]
+name = "urlencoding"
+version = "2.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "daf8dba3b7eb870caf1ddeed7bc9d2a049f3cfdfae7cb521b087cc33ae4c49da"
 
 [[package]]
 name = "utf8parse"

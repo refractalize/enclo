@@ -1,10 +1,10 @@
 [package]
-name = "insectjar-proxy-store-pass"
+name = "insectjar-secret-store-pass"
 version = "0.1.0"
 edition = "2021"
 
 [[bin]]
-name = "insectjar-proxy-store-pass"
+name = "insectjar-secret-store-pass"
 path = "src/main.rs"
 
 [dependencies]

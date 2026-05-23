@@ -1,0 +1,13 @@
+[package]
+name = "insectjar-secret-store-aws-vault"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "insectjar-secret-store-aws-vault"
+path = "src/main.rs"
+
+[dependencies]
+insectjar-proxy-store-common = { path = "../insectjar-proxy-store-common" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "time"] }
+urlencoding = "2"

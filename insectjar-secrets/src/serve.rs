@@ -111,6 +111,11 @@ async fn handle_connection(
         };
 
         let permitted = policy.read().await.is_permitted(&req.name);
+        if permitted {
+            tracing::info!(secret = req.name.as_str(), "secret access allowed");
+        } else {
+            tracing::warn!(secret = req.name.as_str(), "secret access denied by policy");
+        }
         let result = if permitted {
             store.get(&req.name).await
         } else {
