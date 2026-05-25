@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::Path;
 use std::time::Duration;
 use serde::Deserialize;
 use wildmatch::WildMatch;
@@ -50,6 +51,13 @@ pub struct BackendConfig {
 }
 
 impl StoreConfig {
+    pub fn from_file(path: &Path) -> anyhow::Result<Self> {
+        let text = std::fs::read_to_string(path)
+            .map_err(|e| anyhow::anyhow!("failed to read store config {}: {e}", path.display()))?;
+        toml::from_str(&text)
+            .map_err(|e| anyhow::anyhow!("failed to parse store config {}: {e}", path.display()))
+    }
+
     pub fn route(&self, secret_name: &str) -> Option<&str> {
         for route in &self.routes {
             if route.patterns.iter().any(|p| WildMatch::new(p).matches(secret_name)) {

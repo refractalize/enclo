@@ -1,3 +1,4 @@
+mod config;
 mod get;
 mod proxy;
 mod run;
@@ -23,12 +24,19 @@ enum Command {
         #[arg(long, short = 's', default_value = DEFAULT_SOCKET)]
         socket: PathBuf,
 
+        /// Path to the client config file (default: $XDG_CONFIG_HOME/insectjar/client.toml)
+        #[arg(long, short = 'c')]
+        config: Option<PathBuf>,
+
+        /// Secret group(s) to fetch; may be comma-separated or repeated
+        #[arg(long, short = 'g')]
+        group: Vec<String>,
+
         /// Print secrets as shell export statements for use with eval
         #[arg(long)]
         env: bool,
 
         /// Secret names to retrieve
-        #[arg(required = true)]
         names: Vec<String>,
     },
 
@@ -38,8 +46,15 @@ enum Command {
         #[arg(long, short = 's', default_value = DEFAULT_SOCKET)]
         socket: PathBuf,
 
+        /// Path to the client config file (default: $XDG_CONFIG_HOME/insectjar/client.toml)
+        #[arg(long, short = 'c')]
+        config: Option<PathBuf>,
+
+        /// Secret group(s) to fetch; may be comma-separated or repeated
+        #[arg(long, short = 'g')]
+        group: Vec<String>,
+
         /// Secret names to fetch and export as environment variables
-        #[arg(required = true)]
         names: Vec<String>,
 
         /// Command and arguments to run
@@ -63,8 +78,22 @@ enum Command {
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Command::Get { socket, names, env } => get::run(socket, names, env).await,
-        Command::Run { socket, names, cmd } => run::run(socket, names, cmd).await,
+        Command::Get { socket, config, group, names, env } => {
+            if names.is_empty() && group.is_empty() {
+                anyhow::bail!("at least one secret name or --group is required");
+            }
+            let cfg = config::ClientConfig::load_or_default(config.as_deref())?;
+            let resolved = cfg.resolve(&group, &names)?;
+            get::run(socket, resolved, env).await
+        }
+        Command::Run { socket, config, group, names, cmd } => {
+            if names.is_empty() && group.is_empty() {
+                anyhow::bail!("at least one secret name or --group is required");
+            }
+            let cfg = config::ClientConfig::load_or_default(config.as_deref())?;
+            let resolved = cfg.resolve(&group, &names)?;
+            run::run(socket, resolved, cmd).await
+        }
         Command::Proxy { env, cmd } => proxy::run(env, &cmd),
     }
 }

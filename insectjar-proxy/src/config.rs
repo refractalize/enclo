@@ -5,11 +5,21 @@ use wildmatch::WildMatch;
 pub use insectjar_secret_store::config::StoreConfig;
 
 #[derive(Debug, Deserialize)]
+struct RawConfig {
+    listen: SocketAddr,
+    tls: TlsConfig,
+    store: Option<StoreConfig>,
+    store_config: Option<PathBuf>,
+    #[serde(default)]
+    rules: Vec<Rule>,
+    proxy_auth: Option<ProxyAuthConfig>,
+}
+
+#[derive(Debug)]
 pub struct Config {
     pub listen: SocketAddr,
     pub tls: TlsConfig,
     pub store: StoreConfig,
-    #[serde(default)]
     pub rules: Vec<Rule>,
     pub proxy_auth: Option<ProxyAuthConfig>,
 }
@@ -43,11 +53,30 @@ pub enum AuthConfig {
 impl Config {
     pub fn from_file(path: &std::path::Path) -> anyhow::Result<Self> {
         let text = std::fs::read_to_string(path)?;
-        let mut config: Config = toml::from_str(&text)?;
+        let raw: RawConfig = toml::from_str(&text)?;
         let base = path.parent().unwrap_or(std::path::Path::new("."));
-        config.tls.ca_cert = resolve_path(base, &config.tls.ca_cert);
-        config.tls.ca_key = resolve_path(base, &config.tls.ca_key);
-        Ok(config)
+        let store = match (raw.store, raw.store_config) {
+            (Some(s), None) => s,
+            (None, Some(p)) => StoreConfig::from_file(&resolve_path(base, &p))?,
+            (Some(_), Some(_)) => anyhow::bail!(
+                "cannot specify both [store] and store_config in {}",
+                path.display()
+            ),
+            (None, None) => anyhow::bail!(
+                "one of [store] or store_config is required in {}",
+                path.display()
+            ),
+        };
+        Ok(Config {
+            listen: raw.listen,
+            tls: TlsConfig {
+                ca_cert: resolve_path(base, &raw.tls.ca_cert),
+                ca_key: resolve_path(base, &raw.tls.ca_key),
+            },
+            store,
+            rules: raw.rules,
+            proxy_auth: raw.proxy_auth,
+        })
     }
 
     /// Returns the first matching rule for the given hostname.

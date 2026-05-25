@@ -941,8 +941,10 @@ dependencies = [
  "anyhow",
  "clap",
  "insectjar-proxy-store-common",
+ "serde",
  "serde_json",
  "tokio",
+ "toml",
 ]
 
 [[package]]
