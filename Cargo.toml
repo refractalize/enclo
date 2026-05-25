@@ -1,13 +1,13 @@
 [workspace]
 members = [
-    "insectjar",
-    "insectjar-proxy",
-    "insectjar-proxy-store-common",
-    "insectjar-secret-store",
-    "insectjar-secret-store-pass",
-    "insectjar-secret-store-aws-vault",
-    "insectjar-secrets",
-    "insectjar-aws-credentials",
-    "insectjar-container-client",
+    "enclo",
+    "enclo-proxy",
+    "enclo-proxy-store-common",
+    "enclo-secret-store",
+    "enclo-secret-store-pass",
+    "enclo-secret-store-aws-vault",
+    "enclo-secrets",
+    "enclo-aws-credentials",
+    "enclo-container-client",
 ]
 resolver = "2"

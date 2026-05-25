@@ -1,0 +1,12 @@
+[package]
+name = "enclo-secret-store-pass"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "enclo-secret-store-pass"
+path = "src/main.rs"
+
+[dependencies]
+enclo-proxy-store-common = { path = "../enclo-proxy-store-common" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process"] }

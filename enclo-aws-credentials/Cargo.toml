@@ -1,0 +1,16 @@
+[package]
+name = "enclo-aws-credentials"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "enclo-aws-credentials"
+path = "src/main.rs"
+
+[dependencies]
+enclo-proxy-store-common = { path = "../enclo-proxy-store-common" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util"] }
+clap = { version = "4", features = ["derive"] }
+serde_json = "1"
+urlencoding = "2"
+anyhow = "1"

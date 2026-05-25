@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=org.enclo
+Exec=/usr/bin/false
+SystemdService=enclo.service

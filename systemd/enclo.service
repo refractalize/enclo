@@ -1,0 +1,12 @@
+[Unit]
+Description=Insectjar container daemon
+
+[Service]
+Type=dbus
+BusName=org.enclo
+Environment="PATH=%h/.local/bin:/usr/local/bin:/usr/bin"
+ExecStart=%h/.local/bin/enclo serve
+Restart=on-failure
+
+[Install]
+WantedBy=default.target

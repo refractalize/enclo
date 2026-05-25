@@ -558,6 +558,144 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "91622ff5e7162018101f2fea40d6ebf4a78bbe5a49736a2020649edf9693679e"
 
 [[package]]
+name = "enclo"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "clap",
+ "libc",
+ "rand_core",
+ "serde",
+ "tokio",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+ "which",
+ "zbus",
+]
+
+[[package]]
+name = "enclo-aws-credentials"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "enclo-proxy-store-common",
+ "serde_json",
+ "tokio",
+ "urlencoding",
+]
+
+[[package]]
+name = "enclo-container-client"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "enclo-proxy-store-common",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml",
+]
+
+[[package]]
+name = "enclo-proxy"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "argon2",
+ "base64",
+ "bytes",
+ "clap",
+ "dirs-next",
+ "enclo-proxy-store-common",
+ "enclo-secret-store",
+ "http",
+ "http-body-util",
+ "humantime-serde",
+ "hyper",
+ "hyper-util",
+ "libc",
+ "lru",
+ "rand_core",
+ "rcgen",
+ "rpassword",
+ "rustls",
+ "rustls-native-certs",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-rustls",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+ "wildmatch",
+ "zeroize",
+]
+
+[[package]]
+name = "enclo-proxy-store-common"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "enclo-secret-store"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "enclo-proxy-store-common",
+ "humantime-serde",
+ "libc",
+ "serde",
+ "tokio",
+ "toml",
+ "tracing",
+ "wildmatch",
+ "zeroize",
+]
+
+[[package]]
+name = "enclo-secret-store-aws-vault"
+version = "0.1.0"
+dependencies = [
+ "enclo-proxy-store-common",
+ "tokio",
+ "urlencoding",
+]
+
+[[package]]
+name = "enclo-secret-store-pass"
+version = "0.1.0"
+dependencies = [
+ "enclo-proxy-store-common",
+ "tokio",
+]
+
+[[package]]
+name = "enclo-secrets"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "dirs-next",
+ "enclo-proxy-store-common",
+ "enclo-secret-store",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+ "wildmatch",
+]
+
+[[package]]
 name = "endi"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -902,144 +1040,6 @@ dependencies = [
  "hashbrown 0.17.1",
  "serde",
  "serde_core",
-]
-
-[[package]]
-name = "insectjar"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "clap",
- "libc",
- "rand_core",
- "serde",
- "tokio",
- "toml",
- "tracing",
- "tracing-subscriber",
- "which",
- "zbus",
-]
-
-[[package]]
-name = "insectjar-aws-credentials"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "insectjar-proxy-store-common",
- "serde_json",
- "tokio",
- "urlencoding",
-]
-
-[[package]]
-name = "insectjar-container-client"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "insectjar-proxy-store-common",
- "serde",
- "serde_json",
- "tokio",
- "toml",
-]
-
-[[package]]
-name = "insectjar-proxy"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "argon2",
- "base64",
- "bytes",
- "clap",
- "dirs-next",
- "http",
- "http-body-util",
- "humantime-serde",
- "hyper",
- "hyper-util",
- "insectjar-proxy-store-common",
- "insectjar-secret-store",
- "libc",
- "lru",
- "rand_core",
- "rcgen",
- "rpassword",
- "rustls",
- "rustls-native-certs",
- "serde",
- "serde_json",
- "tokio",
- "tokio-rustls",
- "toml",
- "tracing",
- "tracing-subscriber",
- "wildmatch",
- "zeroize",
-]
-
-[[package]]
-name = "insectjar-proxy-store-common"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "insectjar-secret-store"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "humantime-serde",
- "insectjar-proxy-store-common",
- "libc",
- "serde",
- "tokio",
- "toml",
- "tracing",
- "wildmatch",
- "zeroize",
-]
-
-[[package]]
-name = "insectjar-secret-store-aws-vault"
-version = "0.1.0"
-dependencies = [
- "insectjar-proxy-store-common",
- "tokio",
- "urlencoding",
-]
-
-[[package]]
-name = "insectjar-secret-store-pass"
-version = "0.1.0"
-dependencies = [
- "insectjar-proxy-store-common",
- "tokio",
-]
-
-[[package]]
-name = "insectjar-secrets"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "dirs-next",
- "insectjar-proxy-store-common",
- "insectjar-secret-store",
- "serde",
- "serde_json",
- "tokio",
- "toml",
- "tracing",
- "tracing-subscriber",
- "wildmatch",
 ]
 
 [[package]]
