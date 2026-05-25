@@ -1,5 +1,5 @@
 use std::time::Duration;
-use insectjar_proxy_store_common::server;
+use insectjar_proxy_store_common::{server, ResponseResult};
 use tokio::{process::Command, time::timeout};
 
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
@@ -12,42 +12,52 @@ async fn main() {
     }
 }
 
-async fn handle(_id: u64, name: String) -> Result<String, String> {
-    let profile = parse_profile(&name)?;
+async fn handle(_id: u64, name: String) -> ResponseResult {
+    let profile = match parse_profile(&name) {
+        Ok(p) => p,
+        Err(e) => return ResponseResult::Error { error: e },
+    };
 
     let deadline = Duration::from_secs(DEFAULT_TIMEOUT_SECS);
-    let result = timeout(deadline, run_aws_vault(&profile)).await;
-
-    match result {
-        Ok(inner) => inner,
-        Err(_) => Err(format!(
-            "aws-vault timed out after {DEFAULT_TIMEOUT_SECS}s for profile '{profile}' \
-             (SSO session may be expired)"
-        )),
+    match timeout(deadline, run_aws_vault(&profile)).await {
+        Ok(result) => result,
+        Err(_) => ResponseResult::Error {
+            error: format!(
+                "aws-vault timed out after {DEFAULT_TIMEOUT_SECS}s for profile '{profile}' \
+                 (SSO session may be expired)"
+            ),
+        },
     }
 }
 
-async fn run_aws_vault(profile: &str) -> Result<String, String> {
-    let output = Command::new("aws-vault")
+async fn run_aws_vault(profile: &str) -> ResponseResult {
+    let output = match Command::new("aws-vault")
         .args(["export", "--format", "json", profile])
         .output()
         .await
-        .map_err(|e| format!("failed to run aws-vault: {e}"))?;
+    {
+        Ok(o) => o,
+        Err(e) => return ResponseResult::Error { error: format!("failed to run aws-vault: {e}") },
+    };
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("aws-vault failed for profile '{profile}': {}", stderr.trim()));
+        return ResponseResult::Error {
+            error: format!("aws-vault failed for profile '{profile}': {}", stderr.trim()),
+        };
     }
 
-    let stdout = String::from_utf8(output.stdout)
-        .map_err(|e| format!("aws-vault output is not valid UTF-8: {e}"))?;
+    let stdout = match String::from_utf8(output.stdout) {
+        Ok(s) => s,
+        Err(e) => return ResponseResult::Error { error: format!("aws-vault output is not valid UTF-8: {e}") },
+    };
 
     let value = stdout.trim().to_string();
     if value.is_empty() {
-        return Err(format!("aws-vault returned empty output for profile '{profile}'"));
+        return ResponseResult::Error { error: format!("aws-vault returned empty output for profile '{profile}'") };
     }
 
-    Ok(value)
+    ResponseResult::Ok { value }
 }
 
 /// Extracts and URL-decodes the `profile` query parameter from a secret name

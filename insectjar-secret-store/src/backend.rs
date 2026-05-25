@@ -6,7 +6,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use insectjar_proxy_store_common::{client as proto_client, codec, Request};
+use insectjar_proxy_store_common::{client as proto_client, codec, Request, ResponseResult};
 use tokio::{
     io::{AsyncWriteExt, BufWriter},
     process::{Child, ChildStdin, ChildStdout, Command},
@@ -16,7 +16,7 @@ use tokio::{
 const MAX_RESTARTS: usize = 10;
 const RESTART_WINDOW: Duration = Duration::from_secs(60);
 
-type PendingMap = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<String, String>>>>>;
+type PendingMap = Arc<Mutex<HashMap<u64, oneshot::Sender<ResponseResult>>>>;
 
 struct Inner {
     child: Child,
@@ -59,13 +59,16 @@ impl BackendClient {
         Ok(client)
     }
 
-    pub async fn get(&self, name: &str) -> Result<String, String> {
+    pub async fn get(&self, name: &str) -> ResponseResult {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
         self.pending.lock().await.insert(id, tx);
 
         let req = Request { id, name: name.to_string() };
-        let bytes = codec::encode(&req).map_err(|e| e.to_string())?;
+        let bytes = match codec::encode(&req) {
+            Ok(b) => b,
+            Err(e) => return ResponseResult::Error { error: e.to_string() },
+        };
 
         {
             let mut inner = self.inner.lock().await;
@@ -73,11 +76,11 @@ impl BackendClient {
                 && inner.writer.flush().await.is_ok();
             if !write_ok {
                 self.pending.lock().await.remove(&id);
-                return Err("failed to send request to backend process".into());
+                return ResponseResult::Error { error: "failed to send request to backend process".into() };
             }
         }
 
-        rx.await.unwrap_or_else(|_| Err("store disconnected".into()))
+        rx.await.unwrap_or(ResponseResult::Error { error: "backend disconnected".into() })
     }
 }
 

@@ -1,17 +1,17 @@
-use std::{collections::HashMap, path::PathBuf};
+use std::{collections::HashMap, path::Path, path::PathBuf};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter},
     net::UnixStream,
 };
 use insectjar_proxy_store_common::{codec, Request, Response, ResponseResult};
 
-pub async fn run(socket_path: PathBuf, names: Vec<String>) -> anyhow::Result<()> {
-    if names.is_empty() {
-        println!("{{}}");
-        return Ok(());
-    }
+fn silent_error() -> ! {
+    std::process::exit(1);
+}
 
-    let stream = UnixStream::connect(&socket_path).await
+/// Fetch secrets from the daemon and return them as a name→value map.
+pub async fn fetch(socket_path: &Path, names: &[String]) -> anyhow::Result<HashMap<String, String>> {
+    let stream = UnixStream::connect(socket_path).await
         .map_err(|e| anyhow::anyhow!("failed to connect to {}: {e}", socket_path.display()))?;
 
     let (reader, writer) = stream.into_split();
@@ -24,7 +24,6 @@ pub async fn run(socket_path: PathBuf, names: Vec<String>) -> anyhow::Result<()>
         writer.write_all(&bytes).await?;
     }
     writer.flush().await?;
-    // Signal we're done sending so the server can close the write side cleanly.
     drop(writer);
 
     let mut results: HashMap<String, String> = HashMap::new();
@@ -44,15 +43,31 @@ pub async fn run(socket_path: PathBuf, names: Vec<String>) -> anyhow::Result<()>
             .ok_or_else(|| anyhow::anyhow!("response id {} out of range", resp.id))?;
 
         match resp.result {
-            ResponseResult::Ok { value } => {
-                results.insert(name.clone(), value);
-            }
-            ResponseResult::Err { error } => {
-                anyhow::bail!("secret '{}': {}", name, error);
-            }
+            ResponseResult::Ok { value } => { results.insert(name.clone(), value); }
+            ResponseResult::NotFound => anyhow::bail!("secret '{}' not found", name),
+            ResponseResult::Error { .. } => silent_error(),
         }
     }
 
-    println!("{}", serde_json::to_string(&results)?);
+    Ok(results)
+}
+
+pub async fn run(socket_path: PathBuf, names: Vec<String>, env: bool) -> anyhow::Result<()> {
+    if names.is_empty() {
+        if !env { println!("{{}}"); }
+        return Ok(());
+    }
+    let results = fetch(&socket_path, &names).await?;
+    if env {
+        for (k, v) in &results {
+            println!("export {}={}", k, shell_quote(v));
+        }
+    } else {
+        println!("{}", serde_json::to_string(&results)?);
+    }
     Ok(())
+}
+
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', r"'\''"))
 }

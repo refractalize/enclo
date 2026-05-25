@@ -14,6 +14,7 @@ trait Manager {
     async fn restart(&self, name: &str, config_path: &str) -> zbus::Result<()>;
     async fn ensure_running(&self, name: &str, config_path: &str) -> zbus::Result<()>;
     async fn reload(&self, name: &str) -> zbus::Result<()>;
+    async fn module_statuses(&self, name: &str) -> zbus::Result<Vec<(String, String, i64)>>;
 }
 
 async fn connect() -> Result<ManagerProxy<'static>> {
@@ -41,6 +42,10 @@ pub async fn status(name: Option<&str>) -> Result<()> {
         let s = proxy.status(n).await
             .with_context(|| format!("failed to get status for '{}'", n))?;
         println!("{}: {}", n, s);
+
+        if let Ok(modules) = proxy.module_statuses(n).await {
+            print_module_table(&modules);
+        }
     } else {
         let list = proxy.list_containers().await
             .context("failed to list containers")?;
@@ -49,10 +54,23 @@ pub async fn status(name: Option<&str>) -> Result<()> {
         } else {
             for (n, s) in &list {
                 println!("{}: {}", n, s);
+                if let Ok(modules) = proxy.module_statuses(n).await {
+                    print_module_table(&modules);
+                }
+                println!();
             }
         }
     }
     Ok(())
+}
+
+fn print_module_table(modules: &[(String, String, i64)]) {
+    if modules.is_empty() { return; }
+    let name_width = modules.iter().map(|(n, _, _)| n.len()).max().unwrap_or(0).max(6);
+    println!("  {:<width$}  {}", "MODULE", "PROCESS", width = name_width);
+    for (mname, process, _) in modules {
+        println!("  {:<width$}  {}", mname, process, width = name_width);
+    }
 }
 
 pub async fn restart(name: &str, config_path: &str) -> Result<()> {

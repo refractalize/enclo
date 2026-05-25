@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use anyhow::Result;
 use tokio::sync::{watch, Mutex};
@@ -38,6 +39,10 @@ impl ContainerStatus {
 struct ContainerEntry {
     status_tx: watch::Sender<ContainerStatus>,
     reloadable: Vec<Arc<dyn Module>>,
+    all_enabled: Vec<Arc<dyn Module>>,
+    /// Records the time each module was last configured: setup time initially,
+    /// updated to reload time after each successful reload.
+    module_timestamps: Arc<Mutex<HashMap<String, SystemTime>>>,
     ctx: Context,
     _task: tokio::task::JoinHandle<()>,
 }
@@ -105,8 +110,15 @@ impl Manager {
             .filter(|m| m.enabled() && m.can_reload())
             .map(Arc::clone)
             .collect();
+        let all_enabled: Vec<Arc<dyn Module>> = modules.iter()
+            .filter(|m| m.enabled())
+            .map(Arc::clone)
+            .collect();
         let orch = Orchestrator::new(modules);
         let ctx_for_entry = ctx.clone();
+        let module_timestamps: Arc<Mutex<HashMap<String, SystemTime>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let module_timestamps_for_entry = Arc::clone(&module_timestamps);
 
         let (status_tx, rx) = watch::channel(ContainerStatus::Starting);
         let status_tx2 = status_tx.clone();
@@ -136,7 +148,7 @@ impl Manager {
                 }
             });
 
-            match orch.start(&config, &ctx, Some(ready_tx)).await {
+            match orch.start(&config, &ctx, Some(ready_tx), Some(module_timestamps)).await {
                 Ok(()) => {
                     info!("daemon: container '{}' stopped", name2);
                     let _ = status_tx2.send(ContainerStatus::Stopped);
@@ -156,6 +168,8 @@ impl Manager {
         self.inner.lock().await.containers.insert(name.clone(), ContainerEntry {
             status_tx,
             reloadable,
+            all_enabled,
+            module_timestamps: module_timestamps_for_entry,
             ctx: ctx_for_entry,
             _task: task,
         });
@@ -284,10 +298,22 @@ impl Manager {
             (entry.reloadable.clone(), entry.ctx.clone())
         };
 
+        let module_timestamps = {
+            let guard = self.inner.lock().await;
+            guard.containers.get(&name).map(|e| Arc::clone(&e.module_timestamps))
+        };
+
         let mut errors: Vec<String> = Vec::new();
         for module in &reloadable {
-            if let Err(e) = module.reload(&ctx).await {
-                errors.push(format!("{}: {:#}", module.name(), e));
+            match module.reload(&ctx).await {
+                Ok(()) => {
+                    if let Some(ts) = &module_timestamps {
+                        ts.lock().await.insert(module.name().to_string(), SystemTime::now());
+                    }
+                }
+                Err(e) => {
+                    errors.push(format!("{}: {:#}", module.name(), e));
+                }
             }
         }
 
@@ -296,6 +322,34 @@ impl Manager {
         } else {
             Err(zbus::fdo::Error::Failed(errors.join("; ")))
         }
+    }
+
+    async fn module_statuses(&self, name: String) -> zbus::fdo::Result<Vec<(String, String, i64)>> {
+        let (all_enabled, module_timestamps) = {
+            let guard = self.inner.lock().await;
+            let entry = guard.containers.get(&name)
+                .ok_or_else(|| zbus::fdo::Error::Failed(
+                    format!("container '{}' is not running", name)
+                ))?;
+            (entry.all_enabled.clone(), Arc::clone(&entry.module_timestamps))
+        };
+
+        let timestamps = module_timestamps.lock().await;
+        let mut out = Vec::new();
+        for module in &all_enabled {
+            let status = module.module_status().await;
+            let process_str = match status.process_alive {
+                Some(true)  => "running".to_string(),
+                Some(false) => "exited".to_string(),
+                None        => String::new(),
+            };
+            let secs = timestamps.get(module.name())
+                .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(-1);
+            out.push((module.name().to_string(), process_str, secs));
+        }
+        Ok(out)
     }
 
     async fn ensure_running(&self, name: String, config_path: String) -> zbus::fdo::Result<()> {

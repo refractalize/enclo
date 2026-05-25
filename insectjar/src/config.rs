@@ -60,15 +60,48 @@ pub struct ModulesConfig {
     pub secrets: SecretsConfig,
     #[serde(default)]
     pub aws_credentials: AwsCredentialsConfig,
+    #[serde(default)]
+    pub container_client: ContainerClientConfig,
+    #[serde(default)]
+    pub xdg_open: XdgOpenConfig,
+}
+
+#[derive(Debug, Deserialize, Default, Clone, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ProxyMode {
+    /// Set $INSECTJAR_PROXY; traffic is only routed through the proxy when the
+    /// user explicitly runs commands via `insectjar proxy -- <cmd>`.
+    #[default]
+    Explicit,
+    /// Set $HTTP_PROXY/$HTTPS_PROXY directly so all HTTP traffic goes through
+    /// the proxy automatically.
+    Implicit,
 }
 
 #[derive(Debug, Deserialize, Default, Clone)]
 pub struct InsectjarProxyConfig {
     #[serde(default)]
     pub enabled: bool,
-    /// Path to the base insectjar-proxy config file.
+    /// Path to the insectjar-proxy config file.
     pub config: String,
+    /// Controls how the proxy is exposed inside the container.
+    #[serde(default)]
+    pub mode: ProxyMode,
 }
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct ContainerClientConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+impl Default for ContainerClientConfig {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
+fn default_true() -> bool { true }
 
 #[derive(Debug, Deserialize, Default, Clone)]
 pub struct NvidiaConfig {
@@ -164,6 +197,12 @@ pub struct SecretsConfig {
 
 #[derive(Debug, Deserialize, Default, Clone)]
 pub struct AwsCredentialsConfig {
+    #[serde(default)]
+    pub enabled: bool,
+}
+
+#[derive(Debug, Deserialize, Default, Clone)]
+pub struct XdgOpenConfig {
     #[serde(default)]
     pub enabled: bool,
 }

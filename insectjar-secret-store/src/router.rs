@@ -1,6 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::RwLock;
 use wildmatch::WildMatch;
+use insectjar_proxy_store_common::ResponseResult;
 use crate::config::{Route, StoreConfig};
 use crate::backend::BackendClient;
 
@@ -26,26 +27,34 @@ impl Router {
         *self.routes.write().await = compile(routes);
     }
 
-    pub async fn get(&self, name: &str) -> Result<String, String> {
+    pub async fn get(&self, name: &str) -> ResponseResult {
         // Match patterns against the path component only (before '?'), but
         // pass the full name including query string to the backend.
         let path = name.split('?').next().unwrap_or(name);
         let routes = self.routes.read().await;
         for route in routes.iter() {
             if route.patterns.iter().any(|p| p.matches(path)) {
-                let backend = self.backends.get(&route.backend).ok_or_else(|| {
-                    format!("route references unknown backend '{}'", route.backend)
-                })?;
+                let backend = match self.backends.get(&route.backend) {
+                    Some(b) => b,
+                    None => {
+                        tracing::error!(secret = name, backend = route.backend.as_str(), "route references unknown backend");
+                        return ResponseResult::Error {
+                            error: format!("route references unknown backend '{}'", route.backend),
+                        };
+                    }
+                };
                 tracing::info!(secret = name, backend = route.backend.as_str(), "fetching secret from backend");
                 let result = backend.get(name).await;
-                if let Err(ref e) = result {
-                    tracing::warn!(secret = name, backend = route.backend.as_str(), error = e.as_str(), "backend failed to fetch secret");
+                match &result {
+                    ResponseResult::NotFound => tracing::warn!(secret = name, backend = route.backend.as_str(), "backend reported secret not found"),
+                    ResponseResult::Error { error } => tracing::error!(secret = name, backend = route.backend.as_str(), error, "backend failed to fetch secret"),
+                    ResponseResult::Ok { .. } => {}
                 }
                 return result;
             }
         }
         tracing::warn!(secret = name, "no route matched secret");
-        Err(format!("no route matched secret '{name}'"))
+        ResponseResult::NotFound
     }
 }
 

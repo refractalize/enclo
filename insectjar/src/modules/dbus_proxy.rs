@@ -5,7 +5,7 @@ use tokio::process::Child;
 use crate::{
     config::DbusProxyConfig,
     context::Context,
-    module::{Module, ModuleOutput, VolumeMount},
+    module::{Module, ModuleOutput, ModuleStatus, VolumeMount},
 };
 
 const CONTAINER_SOCKET_PATH: &str = "/run/dbus-proxy/bus";
@@ -99,6 +99,12 @@ impl Module for DbusProxy {
         out.env_vars.push(("DBUS_SESSION_BUS_ADDRESS".into(), bus_addr.clone()));
         out.exec_env_vars.push(("DBUS_SESSION_BUS_ADDRESS".into(), bus_addr));
         Ok(out)
+    }
+
+    async fn module_status(&self) -> ModuleStatus {
+        let alive = self.child.lock().await.as_mut()
+            .map(|c| c.try_wait().ok().flatten().is_none());
+        ModuleStatus { process_alive: alive }
     }
 
     async fn teardown(&self, _ctx: &Context) -> anyhow::Result<()> {

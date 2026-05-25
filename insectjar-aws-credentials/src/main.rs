@@ -63,8 +63,11 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             println!("{value}");
             Ok(())
         }
-        ResponseResult::Err { error } => {
-            anyhow::bail!("{error}");
+        ResponseResult::NotFound => {
+            anyhow::bail!("secret not found");
+        }
+        ResponseResult::Error { .. } => {
+            std::process::exit(1);
         }
     }
 }

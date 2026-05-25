@@ -1,8 +1,10 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::OsString;
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use anyhow::{Context as _, Result};
+use tokio::sync::Mutex;
 use tracing::{info, warn};
 
 use crate::{
@@ -79,11 +81,14 @@ impl Orchestrator {
     /// Start the container. If `ready` is provided, it is resolved once the
     /// container is running and post-start commands have completed, allowing
     /// callers (e.g. the daemon) to signal "Running" before the container exits.
+    /// If `timestamps` is provided, it is updated with the time each module's
+    /// setup completes (and again on each reload via the daemon's reload handler).
     pub async fn start(
         &self,
         config: &Config,
         ctx: &Context,
         ready: Option<tokio::sync::oneshot::Sender<Result<()>>>,
+        timestamps: Option<Arc<Mutex<HashMap<String, SystemTime>>>>,
     ) -> Result<()> {
         let ordered = Self::sorted(&self.modules)?;
         let platform = &ctx.platform;
@@ -101,6 +106,9 @@ impl Orchestrator {
             info!("setting up module: {}", module.name());
             match module.setup(ctx).await {
                 Ok(output) => {
+                    if let Some(ts) = &timestamps {
+                        ts.lock().await.insert(module.name().to_string(), SystemTime::now());
+                    }
                     combined.merge(output);
                     active.push(Arc::clone(module));
                 }

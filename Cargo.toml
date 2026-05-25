@@ -8,5 +8,6 @@ members = [
     "insectjar-secret-store-aws-vault",
     "insectjar-secrets",
     "insectjar-aws-credentials",
+    "insectjar-container-client",
 ]
 resolver = "2"

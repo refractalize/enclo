@@ -13,7 +13,7 @@ use tokio::{
 };
 use crate::{codec, Request, ResponseResult};
 
-type PendingMap = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<String, String>>>>>;
+type PendingMap = Arc<Mutex<HashMap<u64, oneshot::Sender<ResponseResult>>>>;
 
 pub struct StoreClient {
     writer: Mutex<BufWriter<ChildStdin>>,
@@ -30,21 +30,27 @@ impl StoreClient {
         })
     }
 
-    pub async fn get(&self, name: &str) -> Result<String, String> {
+    pub async fn get(&self, name: &str) -> ResponseResult {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
         self.pending.lock().await.insert(id, tx);
 
         let req = Request { id, name: name.to_string() };
-        let bytes = codec::encode(&req).map_err(|e| e.to_string())?;
+        let bytes = match codec::encode(&req) {
+            Ok(b) => b,
+            Err(e) => return ResponseResult::Error { error: e.to_string() },
+        };
 
         {
             let mut w = self.writer.lock().await;
-            w.write_all(&bytes).await.map_err(|e| e.to_string())?;
-            w.flush().await.map_err(|e| e.to_string())?;
+            let ok = w.write_all(&bytes).await.is_ok() && w.flush().await.is_ok();
+            if !ok {
+                self.pending.lock().await.remove(&id);
+                return ResponseResult::Error { error: "failed to send request to store".into() };
+            }
         }
 
-        rx.await.unwrap_or_else(|_| Err("store disconnected".into()))
+        rx.await.unwrap_or(ResponseResult::Error { error: "store disconnected".into() })
     }
 }
 
@@ -70,11 +76,7 @@ pub fn spawn_reader(
                         buf.drain(..consumed);
                         let mut map = pending.lock().await;
                         if let Some(tx) = map.remove(&resp.id) {
-                            let result = match resp.result {
-                                ResponseResult::Ok { value } => Ok(value),
-                                ResponseResult::Err { error } => Err(error),
-                            };
-                            let _ = tx.send(result);
+                            let _ = tx.send(resp.result);
                         }
                     }
                 }
@@ -83,7 +85,7 @@ pub fn spawn_reader(
 
         let mut map = pending.lock().await;
         for (_, tx) in map.drain() {
-            let _ = tx.send(Err("store process exited".into()));
+            let _ = tx.send(ResponseResult::Error { error: "store process exited".into() });
         }
 
         Ok(())

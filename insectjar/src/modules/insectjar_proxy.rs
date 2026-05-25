@@ -6,9 +6,9 @@ use tokio::net::TcpStream;
 use tokio::process::Child;
 use tokio::sync::Mutex;
 use crate::{
-    config::InsectjarProxyConfig,
+    config::{InsectjarProxyConfig, ProxyMode},
     context::Context,
-    module::{Module, ModuleOutput, PostStartCmd, VolumeMount},
+    module::{Module, ModuleOutput, ModuleStatus, PostStartCmd, VolumeMount},
 };
 
 const POLL_ATTEMPTS: u32 = 60;
@@ -140,14 +140,30 @@ impl Module for InsectjarProxy {
             args: vec!["update-ca-trust".into()],
             user: Some("root".into()),
         });
-        out.env_vars.push(("HTTP_PROXY".into(), proxy_url.clone()));
-        out.env_vars.push(("HTTPS_PROXY".into(), proxy_url.clone()));
-        out.exec_env_vars.push(("HTTP_PROXY".into(), proxy_url.clone()));
-        out.exec_env_vars.push(("HTTPS_PROXY".into(), proxy_url));
+
+        match self.config.mode {
+            ProxyMode::Implicit => {
+                for key in &["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"] {
+                    out.env_vars.push(((*key).into(), proxy_url.clone()));
+                    out.exec_env_vars.push(((*key).into(), proxy_url.clone()));
+                }
+            }
+            ProxyMode::Explicit => {
+                out.env_vars.push(("INSECTJAR_PROXY".into(), proxy_url.clone()));
+                out.exec_env_vars.push(("INSECTJAR_PROXY".into(), proxy_url));
+            }
+        }
+
         Ok(out)
     }
 
     fn can_reload(&self) -> bool { true }
+
+    async fn module_status(&self) -> ModuleStatus {
+        let alive = self.child.lock().await.as_mut()
+            .map(|c| c.try_wait().ok().flatten().is_none());
+        ModuleStatus { process_alive: alive }
+    }
 
     async fn reload(&self, _ctx: &Context) -> anyhow::Result<()> {
         let guard = self.child.lock().await;

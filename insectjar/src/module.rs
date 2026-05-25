@@ -61,6 +61,11 @@ impl VolumeMount {
     }
 }
 
+pub struct ModuleStatus {
+    /// None = no managed process; Some(true) = process alive; Some(false) = process exited
+    pub process_alive: Option<bool>,
+}
+
 #[async_trait]
 pub trait Module: Send + Sync {
     fn name(&self) -> &str;
@@ -87,5 +92,9 @@ pub trait Module: Send + Sync {
     async fn reload(&self, ctx: &Context) -> anyhow::Result<()> {
         let _ = ctx;
         Ok(())
+    }
+
+    async fn module_status(&self) -> ModuleStatus {
+        ModuleStatus { process_alive: None }
     }
 }

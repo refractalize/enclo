@@ -5,7 +5,7 @@ use tokio::sync::Mutex;
 use crate::{
     config::SecretsConfig,
     context::Context,
-    module::{Module, ModuleOutput, VolumeMount},
+    module::{Module, ModuleOutput, ModuleStatus, VolumeMount},
 };
 
 const SOCKET_POLL_ATTEMPTS: u32 = 60;
@@ -75,7 +75,6 @@ impl Module for Secrets {
         tracing::info!("starting insectjar-secrets");
         let child = tokio::process::Command::new(&binary_path)
             .args([
-                "serve",
                 "--socket", &socket_path.to_string_lossy(),
                 "--config", &self.config.config,
             ])
@@ -95,6 +94,12 @@ impl Module for Secrets {
     }
 
     fn can_reload(&self) -> bool { true }
+
+    async fn module_status(&self) -> ModuleStatus {
+        let alive = self.child.lock().await.as_mut()
+            .map(|c| c.try_wait().ok().flatten().is_none());
+        ModuleStatus { process_alive: alive }
+    }
 
     async fn reload(&self, _ctx: &Context) -> anyhow::Result<()> {
         let guard = self.child.lock().await;

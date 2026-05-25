@@ -7,7 +7,7 @@ use crate::{codec, Request, Response, ResponseResult};
 pub async fn run<F, Fut>(mut handler: F) -> io::Result<()>
 where
     F: FnMut(u64, String) -> Fut,
-    Fut: std::future::Future<Output = Result<String, String>>,
+    Fut: std::future::Future<Output = ResponseResult>,
 {
     let mut stdin = tokio::io::stdin();
     let mut writer = BufWriter::new(tokio::io::stdout());
@@ -28,13 +28,7 @@ where
                     buf.drain(..consumed);
                     let id = req.id;
                     let result = handler(req.id, req.name).await;
-                    let resp = Response {
-                        id,
-                        result: match result {
-                            Ok(value) => ResponseResult::Ok { value },
-                            Err(error) => ResponseResult::Err { error },
-                        },
-                    };
+                    let resp = Response { id, result };
                     let bytes = codec::encode(&resp)?;
                     writer.write_all(&bytes).await?;
                     writer.flush().await?;

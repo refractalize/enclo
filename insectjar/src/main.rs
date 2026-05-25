@@ -130,7 +130,7 @@ async fn main() -> Result<()> {
             let config = Config::load(&path)?;
             let ctx = Context::new(config.container.name.clone())?;
             let orch = Orchestrator::new(build_registry(&config.modules));
-            orch.start(&config, &ctx, None).await
+            orch.start(&config, &ctx, None, None).await
         }
 
         Command::Start { name } => {

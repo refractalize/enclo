@@ -1,6 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::Notify;
 
+use insectjar_proxy_store_common::ResponseResult;
 use crate::config::StoreConfig;
 use crate::backend::BackendClient;
 use crate::cache::Cache;
@@ -49,26 +50,31 @@ impl StoreStack {
         }
     }
 
-    pub async fn get(&self, name: &str) -> Result<String, String> {
+    pub async fn get(&self, name: &str) -> ResponseResult {
         tracing::info!(secret = name, "secret requested");
 
         if let Some(cache) = &self.cache {
             if let Some(value) = cache.get(name).await {
                 tracing::debug!(secret = name, "secret served from cache");
-                return Ok(value);
+                return ResponseResult::Ok { value };
             }
         }
 
         if let Some(confirm) = &self.confirm {
-            confirm.approve(name.to_string()).await?;
+            if let Err(e) = confirm.approve(name.to_string()).await {
+                tracing::warn!(secret = name, reason = e.as_str(), "secret access denied by confirm");
+                return ResponseResult::Error { error: e };
+            }
         }
 
-        let value = self.router.get(name).await?;
+        let result = self.router.get(name).await;
 
-        if let Some(cache) = &self.cache {
-            cache.insert(name, value.clone()).await;
+        if let ResponseResult::Ok { ref value } = result {
+            if let Some(cache) = &self.cache {
+                cache.insert(name, value.clone()).await;
+            }
         }
 
-        Ok(value)
+        result
     }
 }

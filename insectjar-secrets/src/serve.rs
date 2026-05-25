@@ -111,24 +111,26 @@ async fn handle_connection(
         };
 
         let permitted = policy.read().await.is_permitted(&req.name);
-        if permitted {
-            tracing::info!(secret = req.name.as_str(), "secret access allowed");
+        let result = if permitted {
+            let r = store.get(&req.name).await;
+            match &r {
+                ResponseResult::Ok { .. }    => tracing::info!(secret = req.name.as_str(), "secret served"),
+                ResponseResult::NotFound     => tracing::warn!(secret = req.name.as_str(), "secret not found"),
+                ResponseResult::Error { error } => tracing::error!(secret = req.name.as_str(), error, "error fetching secret"),
+            }
+            r
         } else {
             tracing::warn!(secret = req.name.as_str(), "secret access denied by policy");
-        }
-        let result = if permitted {
-            store.get(&req.name).await
-        } else {
-            Err("secret not found".into())
+            ResponseResult::NotFound
         };
 
-        let resp = Response {
-            id: req.id,
-            result: match result {
-                Ok(value) => ResponseResult::Ok { value },
-                Err(error) => ResponseResult::Err { error },
-            },
+        // Collapse any error to notFound before sending to the container.
+        let container_result = match result {
+            ResponseResult::Ok { value } => ResponseResult::Ok { value },
+            ResponseResult::NotFound | ResponseResult::Error { .. } => ResponseResult::NotFound,
         };
+
+        let resp = Response { id: req.id, result: container_result };
 
         let bytes = match codec::encode(&resp) {
             Ok(b) => b,
