@@ -203,7 +203,7 @@ impl Orchestrator {
         let mut active: Vec<Arc<dyn Module>> = Vec::new();
 
         for module in ordered {
-            if !module.supported_platforms().contains(&ctx.platform) {
+            if !ctx.support.supports_module(module.name()) {
                 info!("skipping module {} (unsupported platform)", module.name());
                 continue;
             }

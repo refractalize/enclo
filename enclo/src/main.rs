@@ -6,6 +6,7 @@ mod module;
 mod modules;
 mod orchestrator;
 mod podman;
+mod platform;
 
 use std::path::PathBuf;
 
@@ -17,6 +18,7 @@ use config::Config;
 use context::Context;
 use modules::build_registry;
 use orchestrator::Orchestrator;
+use platform::PlatformSupport;
 
 #[derive(Parser)]
 #[command(name = "enclo", about = "Modular rootless container launcher")]
@@ -103,13 +105,14 @@ fn resolve_config(explicit: Option<PathBuf>, name: Option<&str>) -> PathBuf {
         return p;
     }
     let name = name.unwrap_or("dev");
-    let home = std::env::var("HOME").unwrap_or_default();
-    PathBuf::from(home).join(format!(".config/enclo/{}.toml", name))
+    config_dir().join(format!("{name}.toml"))
 }
 
 fn config_dir() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_default();
-    PathBuf::from(home).join(".config/enclo")
+    let home = std::env::var("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("/root"));
+    PlatformSupport::current().config_dir(&home)
 }
 
 struct LoadedTarget {

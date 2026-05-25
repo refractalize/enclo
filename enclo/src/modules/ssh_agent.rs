@@ -24,7 +24,7 @@ impl SshAgent {
         }
         match self.config.backend {
             SshBackend::GpgAgent => {
-                Ok(ctx.runtime_dir.join("gnupg/S.gpg-agent.ssh"))
+                Ok(ctx.support.default_gpg_agent_ssh_socket_path(&ctx.runtime_dir))
             }
             SshBackend::Standalone => {
                 let val = std::env::var("SSH_AUTH_SOCK").map_err(|_| {

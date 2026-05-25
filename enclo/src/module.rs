@@ -1,6 +1,6 @@
 use std::ffi::OsString;
 use async_trait::async_trait;
-use crate::context::{Context, Platform};
+use crate::context::Context;
 
 #[derive(Debug, Default)]
 pub struct ModuleOutput {
@@ -72,10 +72,6 @@ pub trait Module: Send + Sync {
 
     fn dependencies(&self) -> &[&str] {
         &[]
-    }
-
-    fn supported_platforms(&self) -> &[Platform] {
-        &[Platform::Linux, Platform::MacOs]
     }
 
     fn enabled(&self) -> bool { true }

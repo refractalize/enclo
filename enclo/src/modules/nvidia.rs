@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use crate::{
     config::NvidiaConfig,
-    context::{Context, Platform},
+    context::Context,
     module::{Module, ModuleOutput},
 };
 
@@ -19,10 +19,6 @@ impl Nvidia {
 impl Module for Nvidia {
     fn name(&self) -> &str { "nvidia" }
     fn enabled(&self) -> bool { self.config.enabled }
-
-    fn supported_platforms(&self) -> &[Platform] {
-        &[Platform::Linux]
-    }
 
     async fn setup(&self, _ctx: &Context) -> anyhow::Result<ModuleOutput> {
         if !std::path::Path::new("/dev/nvidia0").exists() {

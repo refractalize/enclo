@@ -38,7 +38,10 @@ impl Module for DbusProxy {
     fn enabled(&self) -> bool { self.config.enabled }
 
     async fn setup(&self, ctx: &Context) -> anyhow::Result<ModuleOutput> {
-        let host_bus = format!("unix:path={}", ctx.runtime_dir.join("bus").display());
+        let host_bus = format!(
+            "unix:path={}",
+            ctx.support.session_bus_socket_path(&ctx.runtime_dir).display()
+        );
 
         tokio::fs::create_dir_all(self.module_dir(ctx)).await?;
         let socket_path = self.socket_path(ctx);

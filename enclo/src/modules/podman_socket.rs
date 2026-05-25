@@ -29,7 +29,7 @@ impl PodmanSocket {
         Ok(self.config.socket_path
             .as_deref()
             .map(PathBuf::from)
-            .unwrap_or_else(|| ctx.runtime_dir.join("podman/podman.sock")))
+            .unwrap_or_else(|| ctx.support.default_podman_socket_path(&ctx.runtime_dir)))
     }
 }
 

@@ -10,6 +10,7 @@ use crate::{
 
 const POLL_ATTEMPTS: u32 = 60;
 const POLL_INTERVAL_MS: u64 = 500;
+const CONTAINER_PROXY_HOST: &str = "host.containers.internal";
 
 pub struct EncloProxy {
     config: EncloProxyConfig,
@@ -122,7 +123,11 @@ impl Module for EncloProxy {
         )
         .await?;
 
-        let proxy_url = format!("http://enclo:{password}@{listen_addr}");
+        let proxy_url = format!(
+            "http://enclo:{password}@{}:{}",
+            CONTAINER_PROXY_HOST,
+            listen_addr.port(),
+        );
 
         let mut out = ModuleOutput::default();
         out.volumes.push(

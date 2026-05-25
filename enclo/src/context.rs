@@ -1,20 +1,5 @@
 use std::path::PathBuf;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Platform {
-    Linux,
-    MacOs,
-}
-
-impl Platform {
-    pub fn current() -> Self {
-        if cfg!(target_os = "macos") {
-            Platform::MacOs
-        } else {
-            Platform::Linux
-        }
-    }
-}
+use crate::platform::{Platform, PlatformSupport};
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
@@ -27,6 +12,7 @@ pub struct Context {
     /// $XDG_RUNTIME_DIR/enclo/<container_name>/ — private to this container instance
     pub enclo_dir: PathBuf,
     pub platform: Platform,
+    pub support: PlatformSupport,
     pub container_name: String,
 }
 
@@ -55,13 +41,10 @@ impl Context {
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from("/root"));
 
-        let runtime_dir = std::env::var("XDG_RUNTIME_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from(format!("/run/user/{}", uid)));
-
-        let config_dir = std::env::var("XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| home.join(".config"));
+        let support = PlatformSupport::current();
+        let runtime_dir = support.runtime_dir(&home, uid);
+        let config_dir = support.config_home(&home);
+        let platform = support.platform();
 
         let enclo_dir = runtime_dir.join("enclo").join(&container_name);
 
@@ -72,7 +55,8 @@ impl Context {
             runtime_dir,
             config_dir,
             enclo_dir,
-            platform: Platform::current(),
+            platform,
+            support,
             container_name,
         })
     }
