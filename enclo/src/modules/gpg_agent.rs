@@ -4,6 +4,7 @@ use crate::{
     config::GpgAgentConfig,
     context::Context,
     module::{Module, ModuleOutput, VolumeMount},
+    modules::support,
 };
 
 pub struct GpgAgent {
@@ -17,15 +18,6 @@ impl GpgAgent {
 
     fn extra_socket_path(&self, ctx: &Context) -> PathBuf {
         ctx.runtime_dir.join("gnupg/S.gpg-agent.extra")
-    }
-
-    async fn check_connectable(&self, path: &Path) -> anyhow::Result<()> {
-        tokio::net::UnixStream::connect(path).await
-            .map(|_| ())
-            .map_err(|e| anyhow::anyhow!(
-                "gpg-agent socket exists at {} but is not connectable: {}",
-                path.display(), e
-            ))
     }
 }
 
@@ -53,7 +45,7 @@ impl Module for GpgAgent {
                 extra_socket.display()
             );
         }
-        self.check_connectable(&extra_socket).await?;
+        support::ensure_unix_socket_connectable(&extra_socket, "gpg-agent socket").await?;
 
         let mut out = ModuleOutput::default();
         out.volumes.push(VolumeMount::new(&gnupg_dir, ctx.home.join(".gnupg")));

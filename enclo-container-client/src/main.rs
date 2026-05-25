@@ -2,6 +2,7 @@ mod config;
 mod get;
 mod proxy;
 mod run;
+mod util;
 
 use std::path::PathBuf;
 use clap::{Parser, Subcommand};

@@ -112,6 +112,13 @@ fn config_dir() -> PathBuf {
     PathBuf::from(home).join(".config/enclo")
 }
 
+struct LoadedTarget {
+    config: Config,
+    ctx: Context,
+    path: PathBuf,
+    name: String,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -121,95 +128,101 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Serve => {
-            daemon::run_daemon(config_dir()).await
-        }
+        Command::Serve => daemon::run_daemon(config_dir()).await,
 
         Command::Run { ref name } => {
-            let path = resolve_config(cli.config, name.as_deref());
-            let config = Config::load(&path)?;
-            let ctx = Context::new(config.container.name.clone())?;
-            let orch = Orchestrator::new(build_registry(&config.modules));
-            orch.start(&config, &ctx, None, None).await
+            let loaded = load_target(cli.config.clone(), name.as_deref())?;
+            Orchestrator::new(build_registry(&loaded.config.modules))
+                .start(&loaded.config, &loaded.ctx, None, None)
+                .await
         }
 
         Command::Start { name } => {
-            let name = name.unwrap_or_else(|| "dev".into());
-            let path = resolve_config(cli.config, Some(&name));
+            let name = resolve_name(name);
+            let path = resolve_config(cli.config.clone(), Some(&name));
             client::start(&name, &path.to_string_lossy()).await
         }
 
         Command::Stop { name } => {
-            let name = name.unwrap_or_else(|| "dev".into());
+            let name = resolve_name(name);
             client::stop(&name).await
         }
 
         Command::Restart { name } => {
-            let name = name.unwrap_or_else(|| "dev".into());
-            let path = resolve_config(cli.config, Some(&name));
+            let name = resolve_name(name);
+            let path = resolve_config(cli.config.clone(), Some(&name));
             client::restart(&name, &path.to_string_lossy()).await
         }
 
         Command::Reload { name } => {
-            let name = name.unwrap_or_else(|| "dev".into());
+            let name = resolve_name(name);
             client::reload(&name).await
         }
 
-        Command::Status { name } => {
-            client::status(name.as_deref()).await
-        }
+        Command::Status { name } => client::status(name.as_deref()).await,
 
         Command::Enter { ref name, ref cmd } => {
-            let name = name.as_deref().unwrap_or("dev");
-            let path = resolve_config(cli.config, Some(name));
-            let config = Config::load(&path)?;
-            let ctx = Context::new(config.container.name.clone())?;
-
-            // Ensure container is running via daemon
-            client::ensure_running(name, &path.to_string_lossy()).await?;
-
-            let exec_env = ctx.enclo_dir.join("exec-env");
-            if !exec_env.exists() {
-                anyhow::bail!(
-                    "exec-env not found at {}; container may not be fully started",
-                    exec_env.display()
-                );
-            }
-
-            let shell_arg = cmd.first().map(|s| s.as_str());
-            let shell = shell_arg.unwrap_or(&config.container.exec_shell);
-            let workdir = resolve_exec_workdir(&config.container.exec_workdir, &ctx);
-            podman::exec(&ctx.container_name, shell, &exec_env, &workdir).await
+            let loaded = load_target(cli.config.clone(), name.as_deref())?;
+            exec_into_target(&loaded, cmd, true).await
         }
 
         Command::Exec { ref name, ref cmd } => {
-            let name = name.as_deref().unwrap_or("dev");
-            let path = resolve_config(cli.config, Some(name));
-            let config = Config::load(&path)?;
-            let ctx = Context::new(config.container.name.clone())?;
-
-            let exec_env = ctx.enclo_dir.join("exec-env");
-            if !exec_env.exists() {
-                anyhow::bail!(
-                    "no exec-env file found at {}; is the container running?",
-                    exec_env.display()
-                );
-            }
-
-            let shell_arg = cmd.first().map(|s| s.as_str());
-            let shell = shell_arg.unwrap_or(&config.container.exec_shell);
-            let workdir = resolve_exec_workdir(&config.container.exec_workdir, &ctx);
-            podman::exec(&ctx.container_name, shell, &exec_env, &workdir).await
+            let loaded = load_target(cli.config.clone(), name.as_deref())?;
+            exec_into_target(&loaded, cmd, false).await
         }
 
         Command::SetupVolume { ref name, dry_run } => {
-            let path = resolve_config(cli.config, name.as_deref());
-            let config = Config::load(&path)?;
-            let ctx = Context::new(config.container.name.clone())?;
-            let orch = Orchestrator::new(build_registry(&config.modules));
-            orch.setup_volume(&config, &ctx, dry_run).await
+            let loaded = load_target(cli.config.clone(), name.as_deref())?;
+            Orchestrator::new(build_registry(&loaded.config.modules))
+                .setup_volume(&loaded.config, &loaded.ctx, dry_run)
+                .await
         }
     }
+}
+
+fn resolve_name(name: Option<String>) -> String {
+    name.unwrap_or_else(|| "dev".into())
+}
+
+fn load_target(explicit_config: Option<PathBuf>, name: Option<&str>) -> Result<LoadedTarget> {
+    let path = resolve_config(explicit_config, name);
+    let config = Config::load(&path)?;
+    let ctx = Context::new(config.container.name.clone())?;
+    Ok(LoadedTarget {
+        config,
+        ctx,
+        path,
+        name: name.unwrap_or("dev").to_string(),
+    })
+}
+
+async fn exec_into_target(loaded: &LoadedTarget, cmd: &[String], ensure_running: bool) -> Result<()> {
+    if ensure_running {
+        client::ensure_running(&loaded.name, &loaded.path.to_string_lossy()).await?;
+    }
+
+    let exec_env = loaded.ctx.enclo_dir.join("exec-env");
+    if !exec_env.exists() {
+        let error = if ensure_running {
+            format!(
+                "exec-env not found at {}; container may not be fully started",
+                exec_env.display()
+            )
+        } else {
+            format!(
+                "no exec-env file found at {}; is the container running?",
+                exec_env.display()
+            )
+        };
+        anyhow::bail!(error);
+    }
+
+    let shell = cmd
+        .first()
+        .map(|value| value.as_str())
+        .unwrap_or(&loaded.config.container.exec_shell);
+    let workdir = resolve_exec_workdir(&loaded.config.container.exec_workdir, &loaded.ctx);
+    podman::exec(&loaded.ctx.container_name, shell, &exec_env, &workdir).await
 }
 
 fn resolve_exec_workdir(config_workdir: &Option<String>, ctx: &Context) -> String {

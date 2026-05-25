@@ -1,14 +1,11 @@
 use std::net::SocketAddr;
-use std::sync::Arc;
 use async_trait::async_trait;
 use serde::Deserialize;
-use tokio::net::TcpStream;
-use tokio::process::Child;
-use tokio::sync::Mutex;
 use crate::{
     config::{EncloProxyConfig, ProxyMode},
     context::Context,
     module::{Module, ModuleOutput, ModuleStatus, PostStartCmd, VolumeMount},
+    modules::support::{self, ManagedChild},
 };
 
 const POLL_ATTEMPTS: u32 = 60;
@@ -16,12 +13,12 @@ const POLL_INTERVAL_MS: u64 = 500;
 
 pub struct EncloProxy {
     config: EncloProxyConfig,
-    child: Arc<Mutex<Option<Child>>>,
+    child: ManagedChild,
 }
 
 impl EncloProxy {
     pub fn new(config: EncloProxyConfig) -> Self {
-        Self { config, child: Arc::new(Mutex::new(None)) }
+        Self { config, child: ManagedChild::new("enclo-proxy") }
     }
 }
 
@@ -73,16 +70,6 @@ async fn generate_password_hash(binary: &str, password: &str) -> anyhow::Result<
     anyhow::bail!("generate-basic-auth output did not contain password_hash")
 }
 
-async fn poll_ready(addr: SocketAddr) -> anyhow::Result<()> {
-    for _ in 0..POLL_ATTEMPTS {
-        if TcpStream::connect(addr).await.is_ok() {
-            return Ok(());
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
-    }
-    anyhow::bail!("enclo-proxy did not become ready at {addr}")
-}
-
 #[async_trait]
 impl Module for EncloProxy {
     fn name(&self) -> &str { "proxy" }
@@ -90,7 +77,7 @@ impl Module for EncloProxy {
 
     async fn setup(&self, ctx: &Context) -> anyhow::Result<ModuleOutput> {
         if self.config.config.is_empty() {
-            anyhow::bail!("modules.enclo_proxy.config must be set to the path of your enclo-proxy config file");
+            anyhow::bail!("modules.proxy.config must be set to the path of your enclo-proxy config file");
         }
 
         tokio::fs::create_dir_all(ctx.module_dir("proxy")).await?;
@@ -124,10 +111,16 @@ impl Module for EncloProxy {
             ])
             .spawn()
             .map_err(|e| anyhow::anyhow!("failed to spawn enclo-proxy: {e}"))?;
-        *self.child.lock().await = Some(child);
+        self.child.store(child).await;
 
         tracing::info!("waiting for enclo-proxy to be ready on {listen_addr}");
-        poll_ready(listen_addr).await?;
+        support::wait_for_tcp(
+            listen_addr,
+            POLL_ATTEMPTS,
+            std::time::Duration::from_millis(POLL_INTERVAL_MS),
+            "enclo-proxy",
+        )
+        .await?;
 
         let proxy_url = format!("http://enclo:{password}@{listen_addr}");
 
@@ -160,35 +153,14 @@ impl Module for EncloProxy {
     fn can_reload(&self) -> bool { true }
 
     async fn module_status(&self) -> ModuleStatus {
-        let alive = self.child.lock().await.as_mut()
-            .map(|c| c.try_wait().ok().flatten().is_none());
-        ModuleStatus { process_alive: alive }
+        ModuleStatus { process_alive: self.child.process_alive().await }
     }
 
     async fn reload(&self, _ctx: &Context) -> anyhow::Result<()> {
-        let guard = self.child.lock().await;
-        if let Some(child) = guard.as_ref() {
-            let pid = child.id()
-                .ok_or_else(|| anyhow::anyhow!("enclo-proxy has no PID (already exited?)"))?;
-            let rc = unsafe { libc::kill(pid as libc::pid_t, libc::SIGHUP) };
-            if rc != 0 {
-                anyhow::bail!(
-                    "failed to send SIGHUP to enclo-proxy (pid {}): {}",
-                    pid, std::io::Error::last_os_error()
-                );
-            }
-            tracing::info!("sent SIGHUP to enclo-proxy (pid {})", pid);
-        } else {
-            anyhow::bail!("enclo-proxy is not running");
-        }
-        Ok(())
+        self.child.send_signal(libc::SIGHUP).await
     }
 
     async fn teardown(&self, _ctx: &Context) -> anyhow::Result<()> {
-        if let Some(mut child) = self.child.lock().await.take() {
-            tracing::info!("stopping enclo-proxy");
-            let _ = child.kill().await;
-        }
-        Ok(())
+        self.child.kill().await
     }
 }

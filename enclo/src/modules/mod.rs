@@ -8,6 +8,7 @@ mod nvidia;
 mod podman_socket;
 mod secrets;
 mod ssh_agent;
+mod support;
 mod xdg_open;
 
 pub use aws_credentials::AwsCredentials;

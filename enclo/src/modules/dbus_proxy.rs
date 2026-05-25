@@ -1,11 +1,9 @@
-use std::sync::Arc;
 use async_trait::async_trait;
-use tokio::sync::Mutex;
-use tokio::process::Child;
 use crate::{
     config::DbusProxyConfig,
     context::Context,
     module::{Module, ModuleOutput, ModuleStatus, VolumeMount},
+    modules::support::{self, ManagedChild},
 };
 
 const CONTAINER_SOCKET_PATH: &str = "/run/dbus-proxy/bus";
@@ -14,14 +12,14 @@ const READY_POLL_INTERVAL_MS: u64 = 250;
 
 pub struct DbusProxy {
     config: DbusProxyConfig,
-    child: Arc<Mutex<Option<Child>>>,
+    child: ManagedChild,
 }
 
 impl DbusProxy {
     pub fn new(config: DbusProxyConfig) -> Self {
         Self {
             config,
-            child: Arc::new(Mutex::new(None)),
+            child: ManagedChild::new("xdg-dbus-proxy"),
         }
     }
 
@@ -32,25 +30,6 @@ impl DbusProxy {
     fn socket_path(&self, ctx: &Context) -> std::path::PathBuf {
         self.module_dir(ctx).join("bus")
     }
-}
-
-async fn wait_for_socket(path: &std::path::Path, child: &Arc<Mutex<Option<Child>>>) -> anyhow::Result<()> {
-    for _ in 0..READY_POLL_ATTEMPTS {
-        if let Some(c) = child.lock().await.as_mut() {
-            if let Some(status) = c.try_wait()? {
-                anyhow::bail!("xdg-dbus-proxy exited unexpectedly with {}", status);
-            }
-        }
-        if tokio::net::UnixStream::connect(path).await.is_ok() {
-            return Ok(());
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(READY_POLL_INTERVAL_MS)).await;
-    }
-    anyhow::bail!(
-        "xdg-dbus-proxy socket never became connectable at {} after {}ms",
-        path.display(),
-        READY_POLL_ATTEMPTS * READY_POLL_INTERVAL_MS as u32,
-    )
 }
 
 #[async_trait]
@@ -88,10 +67,17 @@ impl Module for DbusProxy {
             .spawn()
             .map_err(|e| anyhow::anyhow!("failed to spawn xdg-dbus-proxy: {}", e))?;
 
-        *self.child.lock().await = Some(child);
+        self.child.store(child).await;
 
         tracing::info!("waiting for xdg-dbus-proxy to be ready");
-        wait_for_socket(&socket_path, &self.child).await?;
+        support::wait_for_unix_socket(
+            &socket_path,
+            READY_POLL_ATTEMPTS,
+            std::time::Duration::from_millis(READY_POLL_INTERVAL_MS),
+            "xdg-dbus-proxy",
+            Some(&self.child),
+        )
+        .await?;
 
         let mut out = ModuleOutput::default();
         out.volumes.push(VolumeMount::new(&socket_path, CONTAINER_SOCKET_PATH));
@@ -102,16 +88,10 @@ impl Module for DbusProxy {
     }
 
     async fn module_status(&self) -> ModuleStatus {
-        let alive = self.child.lock().await.as_mut()
-            .map(|c| c.try_wait().ok().flatten().is_none());
-        ModuleStatus { process_alive: alive }
+        ModuleStatus { process_alive: self.child.process_alive().await }
     }
 
     async fn teardown(&self, _ctx: &Context) -> anyhow::Result<()> {
-        if let Some(mut child) = self.child.lock().await.take() {
-            tracing::info!("killing xdg-dbus-proxy");
-            let _ = child.kill().await;
-        }
-        Ok(())
+        self.child.kill().await
     }
 }

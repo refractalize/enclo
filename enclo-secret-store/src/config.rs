@@ -2,9 +2,8 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::time::Duration;
 use serde::Deserialize;
-use wildmatch::WildMatch;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
 pub struct StoreConfig {
     pub cache: Option<CacheConfig>,
     pub confirm: Option<ConfirmConfig>,
@@ -14,7 +13,7 @@ pub struct StoreConfig {
     pub backends: Vec<BackendConfig>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
 pub struct CacheConfig {
     #[serde(with = "humantime_serde")]
     pub idle_ttl: Duration,
@@ -24,7 +23,7 @@ pub struct CacheConfig {
     pub mlock: bool,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
 pub struct ConfirmConfig {
     pub enabled: bool,
     #[serde(default = "default_debounce_ms")]
@@ -35,13 +34,13 @@ fn default_debounce_ms() -> u64 {
     50
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
 pub struct Route {
     pub patterns: Vec<String>,
     pub backend: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
 pub struct BackendConfig {
     pub name: String,
     #[serde(default)]
@@ -57,16 +56,6 @@ impl StoreConfig {
         toml::from_str(&text)
             .map_err(|e| anyhow::anyhow!("failed to parse store config {}: {e}", path.display()))
     }
-
-    pub fn route(&self, secret_name: &str) -> Option<&str> {
-        for route in &self.routes {
-            if route.patterns.iter().any(|p| WildMatch::new(p).matches(secret_name)) {
-                return Some(&route.backend);
-            }
-        }
-        None
-    }
-
     pub fn backend(&self, name: &str) -> Option<&BackendConfig> {
         self.backends.iter().find(|b| b.name == name)
     }

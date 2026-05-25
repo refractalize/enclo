@@ -1,12 +1,13 @@
 use std::{collections::HashMap, sync::Arc};
-use tokio::sync::RwLock;
-use wildmatch::WildMatch;
+
 use enclo_proxy_store_common::ResponseResult;
-use crate::config::{Route, StoreConfig};
+use wildmatch::WildMatch;
+
 use crate::backend::BackendClient;
+use crate::config::Route;
 
 pub struct Router {
-    routes: RwLock<Vec<CompiledRoute>>,
+    routes: Vec<CompiledRoute>,
     backends: HashMap<String, Arc<BackendClient>>,
 }
 
@@ -16,26 +17,23 @@ struct CompiledRoute {
 }
 
 impl Router {
-    pub fn new(config: &StoreConfig, backends: HashMap<String, Arc<BackendClient>>) -> Self {
+    pub fn new(routes: &[Route], backends: HashMap<String, Arc<BackendClient>>) -> Self {
         Self {
-            routes: RwLock::new(compile(&config.routes)),
+            routes: compile(routes),
             backends,
         }
     }
 
-    pub async fn reload(&self, routes: &[Route]) {
-        *self.routes.write().await = compile(routes);
+    pub fn backend(&self, name: &str) -> Option<Arc<BackendClient>> {
+        self.backends.get(name).map(Arc::clone)
     }
 
     pub async fn get(&self, name: &str) -> ResponseResult {
-        // Match patterns against the path component only (before '?'), but
-        // pass the full name including query string to the backend.
         let path = name.split('?').next().unwrap_or(name);
-        let routes = self.routes.read().await;
-        for route in routes.iter() {
+        for route in &self.routes {
             if route.patterns.iter().any(|p| p.matches(path)) {
                 let backend = match self.backends.get(&route.backend) {
-                    Some(b) => b,
+                    Some(backend) => backend,
                     None => {
                         tracing::error!(secret = name, backend = route.backend.as_str(), "route references unknown backend");
                         return ResponseResult::Error {
@@ -43,6 +41,7 @@ impl Router {
                         };
                     }
                 };
+
                 tracing::info!(secret = name, backend = route.backend.as_str(), "fetching secret from backend");
                 let result = backend.get(name).await;
                 match &result {
@@ -53,6 +52,7 @@ impl Router {
                 return result;
             }
         }
+
         tracing::warn!(secret = name, "no route matched secret");
         ResponseResult::NotFound
     }
@@ -61,9 +61,9 @@ impl Router {
 fn compile(routes: &[Route]) -> Vec<CompiledRoute> {
     routes
         .iter()
-        .map(|r| CompiledRoute {
-            patterns: r.patterns.iter().map(|p| WildMatch::new(p)).collect(),
-            backend: r.backend.clone(),
+        .map(|route| CompiledRoute {
+            patterns: route.patterns.iter().map(|pattern| WildMatch::new(pattern)).collect(),
+            backend: route.backend.clone(),
         })
         .collect()
 }

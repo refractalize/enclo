@@ -10,12 +10,24 @@ use tracing::{info, warn};
 use crate::{
     config::Config,
     context::Context,
-    module::{Module, ModuleOutput},
+    module::{Module, ModuleOutput, PostStartCmd},
     podman,
 };
 
 pub struct Orchestrator {
     pub modules: Vec<Arc<dyn Module>>,
+}
+
+struct SetupState {
+    combined: ModuleOutput,
+    active: Vec<Arc<dyn Module>>,
+}
+
+struct VolumePlan {
+    home_volume_name: String,
+    home_str: String,
+    dirs: Vec<String>,
+    files: Vec<String>,
 }
 
 impl Orchestrator {
@@ -91,81 +103,39 @@ impl Orchestrator {
         timestamps: Option<Arc<Mutex<HashMap<String, SystemTime>>>>,
     ) -> Result<()> {
         let ordered = Self::sorted(&self.modules)?;
-        let platform = &ctx.platform;
 
         create_enclo_dir(ctx).await?;
-
-        let mut combined = ModuleOutput::default();
-        let mut active: Vec<Arc<dyn Module>> = Vec::new();
-
-        for module in &ordered {
-            if !module.supported_platforms().contains(platform) {
-                info!("skipping module {} (unsupported platform)", module.name());
-                continue;
+        let setup = match self.setup_modules(&ordered, ctx, timestamps.as_ref()).await {
+            Ok(setup) => setup,
+            Err((module_name, error)) => {
+                let err = Err(error).context(format!("module {} setup failed", module_name));
+                notify_ready_error(ready, err.as_ref().unwrap_err().to_string());
+                return err;
             }
-            info!("setting up module: {}", module.name());
-            match module.setup(ctx).await {
-                Ok(output) => {
-                    if let Some(ts) = &timestamps {
-                        ts.lock().await.insert(module.name().to_string(), SystemTime::now());
-                    }
-                    combined.merge(output);
-                    active.push(Arc::clone(module));
-                }
-                Err(e) => {
-                    warn!("module {} failed: {:#}", module.name(), e);
-                    remove_exec_env(ctx).await;
-                    for m in active.iter().rev() {
-                        let _ = m.teardown(ctx).await;
-                    }
-                    let err = Err(e).context(format!("module {} setup failed", module.name()));
-                    if let Some(tx) = ready {
-                        let msg = err.as_ref().unwrap_err().to_string();
-                        let _ = tx.send(Err(anyhow::anyhow!("{}", msg)));
-                    }
-                    return err;
-                }
-            }
-        }
+        };
 
-        write_exec_env(ctx, &combined.exec_env_vars).await?;
+        write_exec_env(ctx, &setup.combined.exec_env_vars).await?;
 
-        let cmd = build_podman_run_args(config, ctx, &combined);
+        let cmd = build_podman_run_args(config, ctx, &setup.combined);
         info!("launching container: podman run {}", format_args_preview(&cmd));
 
         let mut container_proc = podman::run(&cmd).await?;
 
-        if ready.is_some() || !combined.post_start_cmds.is_empty() {
-            match podman::wait_running(&ctx.container_name, 30).await {
-                Ok(()) => {
-                    for post in &combined.post_start_cmds {
-                        let user = post.user.as_deref().unwrap_or("root");
-                        info!("running post-start: {:?} (user={})", post.args, user);
-                        if let Err(e) = podman::exec_as(&ctx.container_name, user, &post.args).await {
-                            warn!("post-start command failed: {:#}", e);
-                        }
-                    }
-                }
-                Err(e) => {
-                    podman::stop(&ctx.container_name).await.ok();
-                    let _ = container_proc.wait().await;
-                    remove_exec_env(ctx).await;
-                    for m in active.iter().rev() {
-                        let _ = m.teardown(ctx).await;
-                    }
-                    let err = anyhow::anyhow!("{:#}", e);
-                    if let Some(tx) = ready {
-                        let _ = tx.send(Err(anyhow::anyhow!("{}", err)));
-                    }
-                    return Err(err);
-                }
-            }
+        if let Err(error) = self
+            .wait_until_running(
+                ctx,
+                &setup.active,
+                &setup.combined.post_start_cmds,
+                ready.is_some(),
+                &mut container_proc,
+            )
+            .await
+        {
+            notify_ready_error(ready, error.to_string());
+            return Err(error);
         }
 
-        // Signal that the container is now running
-        if let Some(tx) = ready {
-            let _ = tx.send(Ok(()));
-        }
+        notify_ready_ok(ready);
 
         tokio::select! {
             _ = container_proc.wait() => {}
@@ -176,136 +146,38 @@ impl Orchestrator {
             }
         }
 
-        // Container exited — teardown in reverse
-        remove_exec_env(ctx).await;
-        for m in active.iter().rev() {
-            info!("tearing down module: {}", m.name());
-            if let Err(e) = m.teardown(ctx).await {
-                warn!("module {} teardown error: {:#}", m.name(), e);
-            }
-        }
-
-
+        self.teardown_modules(ctx, &setup.active).await;
         Ok(())
     }
 
 
     pub async fn setup_volume(&self, config: &Config, ctx: &Context, dry_run: bool) -> Result<()> {
-        let home_str = ctx.home.to_string_lossy();
+        let plan = build_volume_plan(config, ctx)?;
 
-        // Find the volume entry whose container path is exactly the home directory.
-        let home_volume_name = config.container.volumes.iter().find_map(|v| {
-            let (host, container, _opts) = split_volume(v, ctx);
-            if container == home_str.as_ref() {
-                Some(host)
-            } else {
-                None
-            }
-        }).ok_or_else(|| anyhow::anyhow!(
-            "no volume mapped to {} found in [container].volumes", home_str
-        ))?;
-
-        // Reject host-path bind mounts — must be a named podman volume.
-        if home_volume_name.starts_with('/') || home_volume_name.starts_with('.') {
-            anyhow::bail!(
-                "home volume '{}' is a host path, not a named podman volume",
-                home_volume_name
-            );
-        }
-
-        // Collect mount-point directories and files inside the home volume.
-        let mut dirs: Vec<String> = Vec::new();
-        let mut files: Vec<String> = Vec::new();
-
-        for v in &config.container.volumes {
-            let (host, container, _opts) = split_volume(v, ctx);
-            if container == home_str.as_ref() {
-                continue; // skip the home volume itself
-            }
-            if !container.starts_with(home_str.as_ref()) {
-                continue; // not inside home
-            }
-            let host_path = std::path::Path::new(&host);
-            if host_path.is_file() {
-                // File mount: touch the file and ensure its parent directory exists.
-                if let Some(parent) = std::path::Path::new(&container).parent() {
-                    dirs.push(parent.to_string_lossy().into_owned());
-                }
-                files.push(container);
-            } else {
-                dirs.push(container);
-            }
-        }
-
-        // Expand each dir to include all intermediate ancestors between home and the leaf,
-        // so that mkdir's intermediate dirs also get chowned.
-        let home_path = std::path::Path::new(home_str.as_ref());
-        let mut all_dirs: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-        for d in &dirs {
-            let mut p = std::path::Path::new(d);
-            while let Some(parent) = p.parent() {
-                if p == home_path || parent == home_path || !p.starts_with(home_path) {
-                    break;
-                }
-                all_dirs.insert(p.to_string_lossy().into_owned());
-                p = parent;
-            }
-            all_dirs.insert(d.clone());
-        }
-        let dirs: Vec<String> = all_dirs.into_iter().collect();
-
-        files.sort();
-        files.dedup();
-
-        if dirs.is_empty() && files.is_empty() {
-            println!("no entries to create in volume '{}'", home_volume_name);
+        if plan.dirs.is_empty() && plan.files.is_empty() {
+            println!("no entries to create in volume '{}'", plan.home_volume_name);
             return Ok(());
         }
 
         if dry_run {
-            println!("in volume '{}':", home_volume_name);
-            for d in &dirs {
+            println!("in volume '{}':", plan.home_volume_name);
+            for d in &plan.dirs {
                 println!("  mkdir  {}", d);
             }
-            for f in &files {
+            for f in &plan.files {
                 println!("  touch  {}", f);
             }
-            println!("  (then fix any remaining root-owned entries under {})", home_str);
+            println!("  (then fix any remaining root-owned entries under {})", plan.home_str);
             return Ok(());
         }
-
-        // Build sh command: mkdir dirs, touch files, chown explicit entries,
-        // then fix any remaining root-owned items (e.g. module-produced mount points).
-        let uid = ctx.uid;
-        let mut sh_parts: Vec<String> = Vec::new();
-
-        if !dirs.is_empty() {
-            let args = dirs.iter().map(|d| shell_quote(d)).collect::<Vec<_>>().join(" ");
-            sh_parts.push(format!("mkdir -p {}", args));
-        }
-        if !files.is_empty() {
-            let args = files.iter().map(|f| shell_quote(f)).collect::<Vec<_>>().join(" ");
-            sh_parts.push(format!("touch {}", args));
-        }
-        let explicit: Vec<String> = dirs.iter().chain(files.iter())
-            .map(|p| shell_quote(p))
-            .collect();
-        sh_parts.push(format!("chown {}:{} {}", uid, uid, explicit.join(" ")));
-        // Fix any remaining root-owned entries (e.g. from previous runs or module mounts).
-        sh_parts.push(format!(
-            "find {} -uid 0 -exec chown {}:{} {{}} +",
-            shell_quote(home_str.as_ref()), uid, uid
-        ));
-
-        let sh_cmd = sh_parts.join(" && ");
-
-        info!("setting up home volume '{}'", home_volume_name);
+        let sh_cmd = build_volume_setup_command(ctx.uid, &plan);
+        info!("setting up home volume '{}'", plan.home_volume_name);
         let status = tokio::process::Command::new("podman")
             .args([
                 "run", "--rm",
                 "--user", "root",
                 "--userns", "keep-id",
-                "--volume", &format!("{}:{}", home_volume_name, home_str),
+                "--volume", &format!("{}:{}", plan.home_volume_name, plan.home_str),
                 &config.container.image,
                 "sh", "-c", &sh_cmd,
             ])
@@ -317,8 +189,76 @@ impl Orchestrator {
             anyhow::bail!("setup-volume podman run exited with {}", status);
         }
 
-        info!("volume '{}' set up successfully", home_volume_name);
+        info!("volume '{}' set up successfully", plan.home_volume_name);
         Ok(())
+    }
+
+    async fn setup_modules(
+        &self,
+        ordered: &[Arc<dyn Module>],
+        ctx: &Context,
+        timestamps: Option<&Arc<Mutex<HashMap<String, SystemTime>>>>,
+    ) -> std::result::Result<SetupState, (String, anyhow::Error)> {
+        let mut combined = ModuleOutput::default();
+        let mut active: Vec<Arc<dyn Module>> = Vec::new();
+
+        for module in ordered {
+            if !module.supported_platforms().contains(&ctx.platform) {
+                info!("skipping module {} (unsupported platform)", module.name());
+                continue;
+            }
+            info!("setting up module: {}", module.name());
+            match module.setup(ctx).await {
+                Ok(output) => {
+                    if let Some(ts) = timestamps {
+                        ts.lock().await.insert(module.name().to_string(), SystemTime::now());
+                    }
+                    combined.merge(output);
+                    active.push(Arc::clone(module));
+                }
+                Err(error) => {
+                    warn!("module {} failed: {:#}", module.name(), error);
+                    remove_exec_env(ctx).await;
+                    self.teardown_modules(ctx, &active).await;
+                    return Err((module.name().to_string(), error));
+                }
+            }
+        }
+
+        Ok(SetupState { combined, active })
+    }
+
+    async fn wait_until_running(
+        &self,
+        ctx: &Context,
+        active: &[Arc<dyn Module>],
+        post_start_cmds: &[PostStartCmd],
+        wait_for_ready: bool,
+        container_proc: &mut tokio::process::Child,
+    ) -> Result<()> {
+        if !wait_for_ready && post_start_cmds.is_empty() {
+            return Ok(());
+        }
+
+        if let Err(error) = podman::wait_running(&ctx.container_name, 30).await {
+            podman::stop(&ctx.container_name).await.ok();
+            let _ = container_proc.wait().await;
+            self.teardown_modules(ctx, active).await;
+            return Err(anyhow::anyhow!("{:#}", error));
+        }
+
+        run_post_start_cmds(&ctx.container_name, post_start_cmds).await;
+        Ok(())
+    }
+
+    async fn teardown_modules(&self, ctx: &Context, active: &[Arc<dyn Module>]) {
+        remove_exec_env(ctx).await;
+        for module in active.iter().rev() {
+            info!("tearing down module: {}", module.name());
+            if let Err(error) = module.teardown(ctx).await {
+                warn!("module {} teardown error: {:#}", module.name(), error);
+            }
+        }
     }
 }
 
@@ -434,3 +374,118 @@ fn format_args_preview(args: &[OsString]) -> String {
         .join(" ")
 }
 
+fn notify_ready_ok(ready: Option<tokio::sync::oneshot::Sender<Result<()>>>) {
+    if let Some(tx) = ready {
+        let _ = tx.send(Ok(()));
+    }
+}
+
+fn notify_ready_error(ready: Option<tokio::sync::oneshot::Sender<Result<()>>>, message: String) {
+    if let Some(tx) = ready {
+        let _ = tx.send(Err(anyhow::anyhow!("{}", message)));
+    }
+}
+
+async fn run_post_start_cmds(container_name: &str, post_start_cmds: &[PostStartCmd]) {
+    for post in post_start_cmds {
+        let user = post.user.as_deref().unwrap_or("root");
+        info!("running post-start: {:?} (user={})", post.args, user);
+        if let Err(error) = podman::exec_as(container_name, user, &post.args).await {
+            warn!("post-start command failed: {:#}", error);
+        }
+    }
+}
+
+fn build_volume_plan(config: &Config, ctx: &Context) -> Result<VolumePlan> {
+    let home_str = ctx.home.to_string_lossy().into_owned();
+    let home_volume_name = config.container.volumes.iter().find_map(|volume| {
+        let (host, container, _opts) = split_volume(volume, ctx);
+        if container == home_str {
+            Some(host)
+        } else {
+            None
+        }
+    }).ok_or_else(|| anyhow::anyhow!(
+        "no volume mapped to {} found in [container].volumes", home_str
+    ))?;
+
+    if home_volume_name.starts_with('/') || home_volume_name.starts_with('.') {
+        anyhow::bail!(
+            "home volume '{}' is a host path, not a named podman volume",
+            home_volume_name
+        );
+    }
+
+    let mut dirs = Vec::new();
+    let mut files = Vec::new();
+    for volume in &config.container.volumes {
+        let (host, container, _opts) = split_volume(volume, ctx);
+        if container == home_str || !container.starts_with(&home_str) {
+            continue;
+        }
+        if std::path::Path::new(&host).is_file() {
+            if let Some(parent) = std::path::Path::new(&container).parent() {
+                dirs.push(parent.to_string_lossy().into_owned());
+            }
+            files.push(container);
+        } else {
+            dirs.push(container);
+        }
+    }
+
+    Ok(VolumePlan {
+        home_volume_name,
+        home_str: home_str.clone(),
+        dirs: expand_volume_dirs(&home_str, dirs),
+        files: dedupe_sorted(files),
+    })
+}
+
+fn expand_volume_dirs(home_str: &str, dirs: Vec<String>) -> Vec<String> {
+    let home_path = std::path::Path::new(home_str);
+    let mut all_dirs = std::collections::BTreeSet::new();
+    for dir in &dirs {
+        let mut path = std::path::Path::new(dir);
+        while let Some(parent) = path.parent() {
+            if path == home_path || parent == home_path || !path.starts_with(home_path) {
+                break;
+            }
+            all_dirs.insert(path.to_string_lossy().into_owned());
+            path = parent;
+        }
+        all_dirs.insert(dir.clone());
+    }
+    all_dirs.into_iter().collect()
+}
+
+fn dedupe_sorted(mut values: Vec<String>) -> Vec<String> {
+    values.sort();
+    values.dedup();
+    values
+}
+
+fn build_volume_setup_command(uid: u32, plan: &VolumePlan) -> String {
+    let mut sh_parts = Vec::new();
+    if !plan.dirs.is_empty() {
+        let args = plan.dirs.iter().map(|dir| shell_quote(dir)).collect::<Vec<_>>().join(" ");
+        sh_parts.push(format!("mkdir -p {}", args));
+    }
+    if !plan.files.is_empty() {
+        let args = plan.files.iter().map(|file| shell_quote(file)).collect::<Vec<_>>().join(" ");
+        sh_parts.push(format!("touch {}", args));
+    }
+
+    let explicit: Vec<String> = plan
+        .dirs
+        .iter()
+        .chain(plan.files.iter())
+        .map(|path| shell_quote(path))
+        .collect();
+    sh_parts.push(format!("chown {}:{} {}", uid, uid, explicit.join(" ")));
+    sh_parts.push(format!(
+        "find {} -uid 0 -exec chown {}:{} {{}} +",
+        shell_quote(&plan.home_str), uid, uid
+    ));
+
+    sh_parts.join(" && ")
+}

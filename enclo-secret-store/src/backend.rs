@@ -1,11 +1,12 @@
 use std::{
     collections::{HashMap, VecDeque},
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
     },
     time::{Duration, Instant},
 };
+
 use enclo_proxy_store_common::{client as proto_client, codec, Request, ResponseResult};
 use tokio::{
     io::{AsyncWriteExt, BufWriter},
@@ -27,11 +28,12 @@ pub struct BackendClient {
     binary: String,
     args: Vec<String>,
     env: HashMap<String, String>,
-    inner: Mutex<Inner>,
+    inner: Mutex<Option<Inner>>,
     pending: PendingMap,
     next_id: AtomicU64,
     restart_times: Mutex<VecDeque<Instant>>,
     shutdown: Arc<Notify>,
+    stopping: AtomicBool,
 }
 
 impl BackendClient {
@@ -48,11 +50,12 @@ impl BackendClient {
             binary: binary.to_string(),
             args: args.to_vec(),
             env: env.clone(),
-            inner: Mutex::new(Inner { child, writer }),
+            inner: Mutex::new(Some(Inner { child, writer })),
             pending,
             next_id: AtomicU64::new(0),
             restart_times: Mutex::new(VecDeque::new()),
             shutdown,
+            stopping: AtomicBool::new(false),
         });
 
         start_watching(Arc::clone(&client), stdout);
@@ -60,27 +63,59 @@ impl BackendClient {
     }
 
     pub async fn get(&self, name: &str) -> ResponseResult {
+        if self.stopping.load(Ordering::Acquire) {
+            return ResponseResult::Error {
+                error: format!("backend '{}' is shutting down", self.binary),
+            };
+        }
+
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
         self.pending.lock().await.insert(id, tx);
 
-        let req = Request { id, name: name.to_string() };
+        let req = Request {
+            id,
+            name: name.to_string(),
+        };
         let bytes = match codec::encode(&req) {
             Ok(b) => b,
             Err(e) => return ResponseResult::Error { error: e.to_string() },
         };
 
-        {
+        let send_result = {
             let mut inner = self.inner.lock().await;
-            let write_ok = inner.writer.write_all(&bytes).await.is_ok()
-                && inner.writer.flush().await.is_ok();
-            if !write_ok {
-                self.pending.lock().await.remove(&id);
-                return ResponseResult::Error { error: "failed to send request to backend process".into() };
+            match inner.as_mut() {
+                Some(inner) => {
+                    let write_ok = inner.writer.write_all(&bytes).await.is_ok()
+                        && inner.writer.flush().await.is_ok();
+                    if write_ok {
+                        Ok(())
+                    } else {
+                        Err("failed to send request to backend process".to_string())
+                    }
+                }
+                None => Err("backend process is not running".to_string()),
             }
+        };
+
+        if let Err(error) = send_result {
+            self.pending.lock().await.remove(&id);
+            return ResponseResult::Error { error };
         }
 
-        rx.await.unwrap_or(ResponseResult::Error { error: "backend disconnected".into() })
+        rx.await.unwrap_or(ResponseResult::Error {
+            error: "backend disconnected".into(),
+        })
+    }
+
+    pub async fn shutdown(&self) {
+        self.stopping.store(true, Ordering::Release);
+
+        let mut inner = self.inner.lock().await;
+        if let Some(mut inner) = inner.take() {
+            let _ = inner.child.kill().await;
+            let _ = inner.child.wait().await;
+        }
     }
 }
 
@@ -96,6 +131,11 @@ async fn reader_loop(client: Arc<BackendClient>, stdout: ChildStdout) {
 }
 
 async fn on_exit(client: Arc<BackendClient>) {
+    if client.stopping.load(Ordering::Acquire) {
+        client.inner.lock().await.take();
+        return;
+    }
+
     {
         let mut times = client.restart_times.lock().await;
         let now = Instant::now();
@@ -121,8 +161,14 @@ async fn on_exit(client: Arc<BackendClient>) {
         Ok((child, writer, stdout)) => {
             {
                 let mut inner = client.inner.lock().await;
-                inner.child = child;
-                inner.writer = writer;
+                if client.stopping.load(Ordering::Acquire) {
+                    let mut child = child;
+                    drop(writer);
+                    let _ = child.kill().await;
+                    let _ = child.wait().await;
+                    return;
+                }
+                *inner = Some(Inner { child, writer });
             }
             start_watching(client, stdout);
         }

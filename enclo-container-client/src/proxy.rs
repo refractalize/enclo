@@ -1,4 +1,5 @@
 use std::os::unix::process::CommandExt;
+use crate::util;
 
 pub fn run(env: bool, cmd: &[String]) -> anyhow::Result<()> {
     let proxy_url = std::env::var("INSECTJAR_PROXY")
@@ -12,7 +13,7 @@ pub fn run(env: bool, cmd: &[String]) -> anyhow::Result<()> {
         let vars = [("HTTP_PROXY", &proxy_url), ("HTTPS_PROXY", &proxy_url),
                     ("http_proxy", &proxy_url), ("https_proxy", &proxy_url)];
         for (k, v) in vars {
-            println!("export {}={}", k, shell_quote(v));
+            println!("export {}={}", k, util::shell_quote(v));
         }
         return Ok(());
     }
@@ -26,8 +27,4 @@ pub fn run(env: bool, cmd: &[String]) -> anyhow::Result<()> {
         .exec();
 
     Err(anyhow::anyhow!("failed to exec '{}': {err}", cmd[0]))
-}
-
-fn shell_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', r"'\''"))
 }

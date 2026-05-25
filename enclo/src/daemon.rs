@@ -70,13 +70,49 @@ impl Manager {
     }
 
     async fn load(&self, name: &str, config_path: Option<&str>) -> Result<(Config, Context)> {
-        let path = match config_path {
-            Some(p) if !p.is_empty() => std::path::PathBuf::from(p),
-            _ => self.resolve_config(name),
-        };
+        let path = self.config_path(name, config_path);
         let config = Config::load(&path)?;
         let ctx = Context::new(config.container.name.clone())?;
         Ok((config, ctx))
+    }
+
+    fn config_path(&self, name: &str, config_path: Option<&str>) -> std::path::PathBuf {
+        match config_path {
+            Some(path) if !path.is_empty() => std::path::PathBuf::from(path),
+            _ => self.resolve_config(name),
+        }
+    }
+
+    async fn entry_snapshot(
+        &self,
+        name: &str,
+    ) -> Option<(ContainerStatus, watch::Receiver<ContainerStatus>)> {
+        let guard = self.inner.lock().await;
+        guard.containers.get(name).map(|entry| {
+            (entry.status_tx.borrow().clone(), entry.status_tx.subscribe())
+        })
+    }
+
+    async fn send_status(&self, name: &str, status: ContainerStatus) {
+        let guard = self.inner.lock().await;
+        if let Some(entry) = guard.containers.get(name) {
+            let _ = entry.status_tx.send(status);
+        }
+    }
+
+    async fn wait_until_removed(&self, name: &str, timeout: std::time::Duration) -> zbus::fdo::Result<()> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            if tokio::time::Instant::now() >= deadline {
+                return Err(zbus::fdo::Error::Failed(
+                    format!("timed out waiting for container '{}' to stop before restart", name)
+                ));
+            }
+            if !self.inner.lock().await.containers.contains_key(name) {
+                return Ok(());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
     }
 
     /// Stop all running containers and wait for their tasks to finish teardown.
@@ -106,14 +142,7 @@ impl Manager {
     async fn spawn_start(&self, name: String, config_path: Option<&str>) -> Result<watch::Receiver<ContainerStatus>> {
         let (config, ctx) = self.load(&name, config_path).await?;
         let modules = modules::build_registry(&config.modules);
-        let reloadable: Vec<Arc<dyn Module>> = modules.iter()
-            .filter(|m| m.enabled() && m.can_reload())
-            .map(Arc::clone)
-            .collect();
-        let all_enabled: Vec<Arc<dyn Module>> = modules.iter()
-            .filter(|m| m.enabled())
-            .map(Arc::clone)
-            .collect();
+        let (reloadable, all_enabled) = classify_modules(&modules);
         let orch = Orchestrator::new(modules);
         let ctx_for_entry = ctx.clone();
         let module_timestamps: Arc<Mutex<HashMap<String, SystemTime>>> =
@@ -182,12 +211,7 @@ impl Manager {
 impl Manager {
     async fn start(&self, name: String, config_path: String) -> zbus::fdo::Result<()> {
         // If already running or starting, subscribe to the existing watch and wait.
-        let existing_rx = {
-            let guard = self.inner.lock().await;
-            guard.containers.get(&name).map(|entry| {
-                (entry.status_tx.borrow().clone(), entry.status_tx.subscribe())
-            })
-        };
+        let existing_rx = self.entry_snapshot(&name).await;
 
         let mut rx = match existing_rx {
             Some((ContainerStatus::Running, _)) => return Ok(()),
@@ -232,13 +256,7 @@ impl Manager {
         let ctx = Context::new(name.clone())
             .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
 
-        // Mark as stopping
-        {
-            let guard = self.inner.lock().await;
-            if let Some(entry) = guard.containers.get(&name) {
-                let _ = entry.status_tx.send(ContainerStatus::Stopping);
-            }
-        }
+        self.send_status(&name, ContainerStatus::Stopping).await;
 
         crate::podman::stop(&ctx.container_name).await
             .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
@@ -264,26 +282,9 @@ impl Manager {
         // Stop the container if it's running, ignoring errors (it may already be stopped).
         let ctx = Context::new(name.clone())
             .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
-        {
-            let guard = self.inner.lock().await;
-            if let Some(entry) = guard.containers.get(&name) {
-                let _ = entry.status_tx.send(ContainerStatus::Stopping);
-            }
-        }
+        self.send_status(&name, ContainerStatus::Stopping).await;
         let _ = crate::podman::stop(&ctx.container_name).await;
-
-        // Wait for the task to finish removing itself from the map.
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
-        loop {
-            if tokio::time::Instant::now() >= deadline {
-                return Err(zbus::fdo::Error::Failed(
-                    format!("timed out waiting for container '{}' to stop before restart", name)
-                ));
-            }
-            let still_running = self.inner.lock().await.containers.contains_key(&name);
-            if !still_running { break; }
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-        }
+        self.wait_until_removed(&name, std::time::Duration::from_secs(30)).await?;
 
         self.start(name, config_path).await
     }
@@ -387,4 +388,18 @@ pub async fn run_daemon(config_dir: std::path::PathBuf) -> Result<()> {
     info!("daemon: shutting down");
     manager.stop_all().await;
     Ok(())
+}
+
+fn classify_modules(modules: &[Arc<dyn Module>]) -> (Vec<Arc<dyn Module>>, Vec<Arc<dyn Module>>) {
+    let all_enabled: Vec<Arc<dyn Module>> = modules
+        .iter()
+        .filter(|module| module.enabled())
+        .map(Arc::clone)
+        .collect();
+    let reloadable = all_enabled
+        .iter()
+        .filter(|module| module.can_reload())
+        .map(Arc::clone)
+        .collect();
+    (reloadable, all_enabled)
 }

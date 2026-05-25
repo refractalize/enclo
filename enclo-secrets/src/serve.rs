@@ -5,7 +5,7 @@ use tokio::{
     signal::unix::{signal, SignalKind},
     sync::{Notify, RwLock},
 };
-use enclo_proxy_store_common::{codec, Request, Response, ResponseResult};
+use enclo_proxy_store_common::{codec, service, Request, Response, ResponseResult};
 use enclo_secret_store::StoreStack;
 use crate::access::AccessPolicy;
 use crate::config::Config;
@@ -31,15 +31,7 @@ pub async fn run(socket_path: PathBuf, config_path: PathBuf, config: Config) -> 
 
     tracing::info!("listening on {}", socket_path.display());
 
-    let shutdown_clone = Arc::clone(&shutdown);
-    tokio::spawn(async move {
-        let mut sigterm = signal(SignalKind::terminate()).expect("failed to register SIGTERM handler");
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => {}
-            _ = sigterm.recv() => {}
-        }
-        shutdown_clone.notify_one();
-    });
+    service::spawn_shutdown_listener(Arc::clone(&shutdown));
 
     let mut sighup = signal(SignalKind::hangup())?;
 
@@ -83,7 +75,7 @@ async fn reload_config(
     policy: &Arc<RwLock<AccessPolicy>>,
 ) -> anyhow::Result<()> {
     let new_config = crate::config::Config::from_file(config_path)?;
-    store.reload(&new_config.store).await;
+    store.reload(&new_config.store).await?;
     *policy.write().await = AccessPolicy::new(&new_config.access);
     Ok(())
 }

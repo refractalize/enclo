@@ -4,6 +4,7 @@ use crate::{
     config::{SshAgentConfig, SshBackend},
     context::Context,
     module::{Module, ModuleOutput, VolumeMount},
+    modules::support,
 };
 
 const CONTAINER_SOCKET_PATH: &str = "/run/ssh-agent.sock";
@@ -53,12 +54,7 @@ impl Module for SshAgent {
             );
         }
 
-        tokio::net::UnixStream::connect(&socket).await.map_err(|e| {
-            anyhow::anyhow!(
-                "SSH agent socket exists at {} but is not connectable: {}",
-                socket.display(), e
-            )
-        })?;
+        support::ensure_unix_socket_connectable(&socket, "SSH agent socket").await?;
 
         let mut out = ModuleOutput::default();
         out.volumes.push(VolumeMount::new(&socket, CONTAINER_SOCKET_PATH));

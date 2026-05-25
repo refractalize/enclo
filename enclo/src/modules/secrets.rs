@@ -1,11 +1,9 @@
-use std::sync::Arc;
 use async_trait::async_trait;
-use tokio::process::Child;
-use tokio::sync::Mutex;
 use crate::{
     config::SecretsConfig,
     context::Context,
     module::{Module, ModuleOutput, ModuleStatus, VolumeMount},
+    modules::support::{self, ManagedChild},
 };
 
 const SOCKET_POLL_ATTEMPTS: u32 = 60;
@@ -13,48 +11,13 @@ const SOCKET_POLL_INTERVAL_MS: u64 = 200;
 
 pub struct Secrets {
     config: SecretsConfig,
-    child: Arc<Mutex<Option<Child>>>,
+    child: ManagedChild,
 }
 
 impl Secrets {
     pub fn new(config: SecretsConfig) -> Self {
-        Self { config, child: Arc::new(Mutex::new(None)) }
+        Self { config, child: ManagedChild::new("enclo-secrets") }
     }
-}
-
-async fn resolve_binary_path(binary: &str) -> anyhow::Result<std::path::PathBuf> {
-    let out = tokio::process::Command::new("sh")
-        .args(["-c", &format!("command -v {}", shell_escape(binary))])
-        .output()
-        .await
-        .map_err(|e| anyhow::anyhow!("failed to resolve binary path: {e}"))?;
-
-    if !out.status.success() || out.stdout.is_empty() {
-        anyhow::bail!("enclo-secrets binary not found in PATH: {}", binary);
-    }
-
-    let path = String::from_utf8(out.stdout)
-        .map_err(|e| anyhow::anyhow!("binary path is not valid UTF-8: {e}"))?;
-    Ok(std::path::PathBuf::from(path.trim()))
-}
-
-fn shell_escape(s: &str) -> String {
-    // Simple single-quote escape: replace ' with '\''
-    format!("'{}'", s.replace('\'', r"'\''"))
-}
-
-async fn poll_socket(path: &std::path::Path) -> anyhow::Result<()> {
-    for _ in 0..SOCKET_POLL_ATTEMPTS {
-        if path.exists() {
-            return Ok(());
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(SOCKET_POLL_INTERVAL_MS)).await;
-    }
-    anyhow::bail!(
-        "enclo-secrets socket did not appear at {} after {}ms",
-        path.display(),
-        SOCKET_POLL_ATTEMPTS as u64 * SOCKET_POLL_INTERVAL_MS,
-    )
 }
 
 #[async_trait]
@@ -70,7 +33,7 @@ impl Module for Secrets {
         }
 
         let socket_path = ctx.enclo_dir.join("secrets.sock");
-        let binary_path = resolve_binary_path("enclo-secrets").await?;
+        let binary_path = support::resolve_binary_path("enclo-secrets")?;
 
         tracing::info!("starting enclo-secrets");
         let child = tokio::process::Command::new(&binary_path)
@@ -80,10 +43,16 @@ impl Module for Secrets {
             ])
             .spawn()
             .map_err(|e| anyhow::anyhow!("failed to spawn enclo-secrets: {e}"))?;
-        *self.child.lock().await = Some(child);
+        self.child.store(child).await;
 
         tracing::info!("waiting for enclo-secrets socket at {}", socket_path.display());
-        poll_socket(&socket_path).await?;
+        support::wait_for_path(
+            &socket_path,
+            SOCKET_POLL_ATTEMPTS,
+            std::time::Duration::from_millis(SOCKET_POLL_INTERVAL_MS),
+            "enclo-secrets socket",
+        )
+        .await?;
 
         let mut out = ModuleOutput::default();
         out.volumes.push(VolumeMount::new(&socket_path, "/run/enclo-secrets.sock"));
@@ -96,35 +65,14 @@ impl Module for Secrets {
     fn can_reload(&self) -> bool { true }
 
     async fn module_status(&self) -> ModuleStatus {
-        let alive = self.child.lock().await.as_mut()
-            .map(|c| c.try_wait().ok().flatten().is_none());
-        ModuleStatus { process_alive: alive }
+        ModuleStatus { process_alive: self.child.process_alive().await }
     }
 
     async fn reload(&self, _ctx: &Context) -> anyhow::Result<()> {
-        let guard = self.child.lock().await;
-        if let Some(child) = guard.as_ref() {
-            let pid = child.id()
-                .ok_or_else(|| anyhow::anyhow!("enclo-secrets has no PID (already exited?)"))?;
-            let rc = unsafe { libc::kill(pid as libc::pid_t, libc::SIGHUP) };
-            if rc != 0 {
-                anyhow::bail!(
-                    "failed to send SIGHUP to enclo-secrets (pid {}): {}",
-                    pid, std::io::Error::last_os_error()
-                );
-            }
-            tracing::info!("sent SIGHUP to enclo-secrets (pid {})", pid);
-        } else {
-            anyhow::bail!("enclo-secrets is not running");
-        }
-        Ok(())
+        self.child.send_signal(libc::SIGHUP).await
     }
 
     async fn teardown(&self, _ctx: &Context) -> anyhow::Result<()> {
-        if let Some(mut child) = self.child.lock().await.take() {
-            tracing::info!("stopping enclo-secrets");
-            let _ = child.kill().await;
-        }
-        Ok(())
+        self.child.kill().await
     }
 }
