@@ -11,12 +11,14 @@ TARGET_DIR="${SCRIPT_DIR}/../target/release"
 install -Dm755 "${TARGET_DIR}/enclo" "${BIN_DIR}/enclo"
 echo "installed: ${BIN_DIR}/enclo"
 
-install -Dm644 "${SCRIPT_DIR}/../systemd/enclo.service" "${SYSTEMD_USER_DIR}/enclo.service"
-echo "installed: ${SYSTEMD_USER_DIR}/enclo.service"
+if [[ "$(uname)" != "Darwin" ]]; then
+  install -Dm644 "${SCRIPT_DIR}/../systemd/enclo.service" "${SYSTEMD_USER_DIR}/enclo.service"
+  echo "installed: ${SYSTEMD_USER_DIR}/enclo.service"
 
-install -Dm644 "${SCRIPT_DIR}/../systemd/org.enclo.service" "${DBUS_SERVICES_DIR}/org.enclo.service"
-echo "installed: ${DBUS_SERVICES_DIR}/org.enclo.service"
+  install -Dm644 "${SCRIPT_DIR}/../systemd/org.enclo.service" "${DBUS_SERVICES_DIR}/org.enclo.service"
+  echo "installed: ${DBUS_SERVICES_DIR}/org.enclo.service"
 
-systemctl --user daemon-reload
-systemctl --user enable enclo.service
-echo "enabled enclo.service (D-Bus activated)"
+  systemctl --user daemon-reload
+  systemctl --user enable enclo.service
+  echo "enabled enclo.service (D-Bus activated)"
+fi

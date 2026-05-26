@@ -77,6 +77,23 @@ pub fn resolve_binary_path(binary: &str) -> anyhow::Result<PathBuf> {
         .map_err(|_| anyhow::anyhow!("{binary} not found (checked sibling directory and $PATH)"))
 }
 
+/// Like `resolve_binary_path`, but on macOS looks in the `linux/` subdirectory
+/// alongside the host binary first, so the correct Linux build is mounted into
+/// containers rather than the macOS build.
+pub fn resolve_container_binary_path(binary: &str) -> anyhow::Result<PathBuf> {
+    #[cfg(target_os = "macos")]
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let candidate = dir.join("linux").join(binary);
+            if candidate.is_file() {
+                return Ok(candidate);
+            }
+        }
+    }
+
+    resolve_binary_path(binary)
+}
+
 pub async fn wait_for_path(
     path: &Path,
     attempts: u32,

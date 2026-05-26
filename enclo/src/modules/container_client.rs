@@ -22,7 +22,7 @@ impl Module for ContainerClient {
     fn enabled(&self) -> bool { self.config.enabled }
 
     async fn setup(&self, _ctx: &Context) -> anyhow::Result<ModuleOutput> {
-        let binary_path = support::resolve_binary_path("enclo-container-client")?;
+        let binary_path = support::resolve_container_binary_path("enclo-container-client")?;
         let mut out = ModuleOutput::default();
         out.volumes.push(
             VolumeMount::new(&binary_path, "/usr/local/bin/enclo").with_options("ro"),
