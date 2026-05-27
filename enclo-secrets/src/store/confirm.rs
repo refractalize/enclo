@@ -110,8 +110,6 @@ async fn run_pinentry(app_name: &str, names: &[String]) -> bool {
     let mut writer = stdin;
     let mut line = String::new();
 
-    // Read lines from pinentry, skipping Assuan informational "S " lines,
-    // until we get the first OK/ERR/other terminal response.
     async fn read_response(reader: &mut tokio::io::BufReader<tokio::process::ChildStdout>, line: &mut String) -> bool {
         loop {
             line.clear();
@@ -124,12 +122,10 @@ async fn run_pinentry(app_name: &str, names: &[String]) -> bool {
         }
     }
 
-    // Consume the initial greeting.
     if !read_response(&mut reader, &mut line).await {
         return false;
     }
 
-    // Send a command and read the response, skipping informational lines.
     macro_rules! send {
         ($cmd:expr) => {{
             if writer.write_all($cmd.as_bytes()).await.is_err() {

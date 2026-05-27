@@ -1,4 +1,4 @@
-use enclo_proxy_store_common::{server, ResponseResult};
+use enclo_backend_protocol::{server, ResponseResult};
 use tokio::process::Command;
 
 #[tokio::main]

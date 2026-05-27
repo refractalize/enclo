@@ -1,16 +1,17 @@
 use std::sync::Arc;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use ::http::HeaderMap;
-use enclo_proxy_store_common::ResponseResult;
-use crate::{config::AuthConfig, store::StoreStack};
+use enclo_backend_protocol::ResponseResult;
+use crate::config::{AuthConfig, Config};
+use crate::store::StoreStack;
 
 pub async fn inject(
     host: &str,
     headers: &mut HeaderMap,
-    config: &crate::config::Config,
+    config: &Config,
     store: &Arc<StoreStack>,
 ) -> Result<(), String> {
-    let Some(rule) = config.match_rule(host) else {
+    let Some(rule) = config.proxy.match_rule(host) else {
         return Ok(());
     };
 

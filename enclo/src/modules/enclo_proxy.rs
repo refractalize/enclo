@@ -19,13 +19,18 @@ pub struct EncloProxy {
 
 impl EncloProxy {
     pub fn new(config: EncloProxyConfig) -> Self {
-        Self { config, child: ManagedChild::new("enclo-proxy") }
+        Self { config, child: ManagedChild::new("enclo-secrets") }
     }
 }
 
-/// Minimal TOML wrapper to extract the fields we need from a proxy config file.
+/// Minimal TOML wrapper to extract the fields we need from the unified config file.
 #[derive(Deserialize)]
 struct ProxyConfigPreview {
+    proxy: ProxySection,
+}
+
+#[derive(Deserialize)]
+struct ProxySection {
     listen: SocketAddr,
     tls: ProxyTlsPreview,
 }
@@ -45,10 +50,10 @@ fn random_password() -> String {
 async fn generate_password_hash(binary: &str, password: &str) -> anyhow::Result<String> {
     let out = tokio::process::Command::new(binary)
         .args(["generate-basic-auth", "enclo"])
-        .env("INSECTJAR_PROXY_PASSWORD", password)
+        .env("ENCLO_PROXY_PASSWORD", password)
         .output()
         .await
-        .map_err(|e| anyhow::anyhow!("failed to run enclo-proxy generate-basic-auth: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("failed to run enclo-secrets generate-basic-auth: {e}"))?;
 
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
@@ -56,7 +61,7 @@ async fn generate_password_hash(binary: &str, password: &str) -> anyhow::Result<
     }
 
     // Output is TOML like:
-    //   [proxy_auth]
+    //   [proxy.auth]
     //   username      = "enclo"
     //   password_hash = "$argon2id$..."
     let stdout = String::from_utf8(out.stdout)?;
@@ -78,7 +83,7 @@ impl Module for EncloProxy {
 
     async fn setup(&self, ctx: &Context) -> anyhow::Result<ModuleOutput> {
         if self.config.config.is_empty() {
-            anyhow::bail!("modules.proxy.config must be set to the path of your enclo-proxy config file");
+            anyhow::bail!("modules.proxy.config must be set to the path of your enclo-secrets config file");
         }
 
         tokio::fs::create_dir_all(ctx.module_dir("proxy")).await?;
@@ -90,20 +95,20 @@ impl Module for EncloProxy {
             .map_err(|e| anyhow::anyhow!("failed to read proxy config {}: {e}", self.config.config))?;
         let preview: ProxyConfigPreview = toml::from_str(&raw)
             .map_err(|e| anyhow::anyhow!("failed to parse proxy config {}: {e}", self.config.config))?;
-        let listen_addr = preview.listen;
-        let ca_cert = if preview.tls.ca_cert.is_absolute() {
-            preview.tls.ca_cert
+        let listen_addr = preview.proxy.listen;
+        let ca_cert = if preview.proxy.tls.ca_cert.is_absolute() {
+            preview.proxy.tls.ca_cert
         } else {
-            config_dir.join(&preview.tls.ca_cert)
+            config_dir.join(&preview.proxy.tls.ca_cert)
         };
 
         let password = random_password();
 
-        tracing::info!("generating enclo-proxy basic auth credentials");
-        let password_hash = generate_password_hash("enclo-proxy", &password).await?;
+        tracing::info!("generating enclo-secrets basic auth credentials");
+        let password_hash = generate_password_hash("enclo-secrets", &password).await?;
 
-        tracing::info!("starting enclo-proxy");
-        let child = tokio::process::Command::new("enclo-proxy")
+        tracing::info!("starting enclo-secrets");
+        let child = tokio::process::Command::new("enclo-secrets")
             .args([
                 "serve",
                 "--config", &self.config.config,
@@ -111,15 +116,15 @@ impl Module for EncloProxy {
                 "--password-hash", &password_hash,
             ])
             .spawn()
-            .map_err(|e| anyhow::anyhow!("failed to spawn enclo-proxy: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("failed to spawn enclo-secrets: {e}"))?;
         self.child.store(child).await;
 
-        tracing::info!("waiting for enclo-proxy to be ready on {listen_addr}");
+        tracing::info!("waiting for enclo-secrets to be ready on {listen_addr}");
         support::wait_for_tcp(
             listen_addr,
             POLL_ATTEMPTS,
             std::time::Duration::from_millis(POLL_INTERVAL_MS),
-            "enclo-proxy",
+            "enclo-secrets",
         )
         .await?;
 
@@ -131,7 +136,7 @@ impl Module for EncloProxy {
 
         let mut out = ModuleOutput::default();
         out.volumes.push(
-            VolumeMount::new(&ca_cert, "/etc/pki/ca-trust/source/anchors/enclo-proxy-ca.pem")
+            VolumeMount::new(&ca_cert, "/etc/pki/ca-trust/source/anchors/enclo-secrets-ca.pem")
                 .with_options("ro"),
         );
         out.post_start_cmds.push(PostStartCmd {

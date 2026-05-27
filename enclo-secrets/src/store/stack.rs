@@ -9,13 +9,13 @@ use std::{
 
 use tokio::sync::{Notify, RwLock};
 
-use enclo_proxy_store_common::ResponseResult;
+use enclo_backend_protocol::ResponseResult;
 
-use crate::backend::BackendClient;
-use crate::cache::Cache;
-use crate::config::{BackendConfig, CacheConfig, ConfirmConfig, StoreConfig};
-use crate::confirm::Confirm;
-use crate::router::Router;
+use crate::store::backend::BackendClient;
+use crate::store::cache::Cache;
+use crate::store::config::{BackendConfig, CacheConfig, ConfirmConfig, StoreConfig};
+use crate::store::confirm::Confirm;
+use crate::store::router::Router;
 
 const RUNTIME_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -50,9 +50,7 @@ impl Drop for RuntimeGuard {
 impl StoreRuntime {
     fn enter(self: &Arc<Self>) -> RuntimeGuard {
         self.active_requests.fetch_add(1, Ordering::AcqRel);
-        RuntimeGuard {
-            runtime: Arc::clone(self),
-        }
+        RuntimeGuard { runtime: Arc::clone(self) }
     }
 
     async fn wait_for_idle(&self) {
@@ -199,12 +197,7 @@ async fn build_cache(
     }
 
     Some((
-        Arc::new(Cache::new(
-            config.idle_ttl,
-            config.max_ttl,
-            config.mlock,
-            shutdown,
-        )),
+        Arc::new(Cache::new(config.idle_ttl, config.max_ttl, config.mlock, shutdown)),
         config,
     ))
 }
@@ -296,7 +289,6 @@ mod tests {
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(10)).await;
             drop(guard);
-            // keep clone alive until after guard drops
             drop(release_runtime);
         });
 

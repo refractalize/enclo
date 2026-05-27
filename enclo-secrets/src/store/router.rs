@@ -1,10 +1,10 @@
 use std::{collections::HashMap, sync::Arc};
 
-use enclo_proxy_store_common::ResponseResult;
+use enclo_backend_protocol::ResponseResult;
 use wildmatch::WildMatch;
 
-use crate::backend::BackendClient;
-use crate::config::Route;
+use crate::store::backend::BackendClient;
+use crate::store::config::Route;
 
 pub struct Router {
     routes: Vec<CompiledRoute>,

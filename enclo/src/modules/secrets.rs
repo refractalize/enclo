@@ -38,6 +38,7 @@ impl Module for Secrets {
         tracing::info!("starting enclo-secrets");
         let child = tokio::process::Command::new(&binary_path)
             .args([
+                "serve",
                 "--socket", &socket_path.to_string_lossy(),
                 "--config", &self.config.config,
             ])

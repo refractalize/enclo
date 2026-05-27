@@ -14,8 +14,6 @@ pub struct ProxyAuth {
 }
 
 impl ProxyAuth {
-    /// Parses and validates `password_hash` at construction time so a bad config
-    /// fails at startup rather than silently rejecting every request.
     pub fn new(config: &ProxyAuthConfig) -> anyhow::Result<Arc<Self>> {
         PasswordHash::new(&config.password_hash)
             .map_err(|e| anyhow!("invalid password_hash in proxy auth config: {e}"))?;
@@ -25,7 +23,6 @@ impl ProxyAuth {
         }))
     }
 
-    /// Returns true if the request carries valid proxy credentials.
     pub fn verify<B>(&self, req: &Request<B>) -> bool {
         let Some(header) = req.headers().get("proxy-authorization") else {
             return false;
@@ -52,7 +49,6 @@ impl ProxyAuth {
     }
 }
 
-/// 407 response sent when credentials are missing or wrong.
 pub fn proxy_auth_required() -> BoxResponse {
     Response::builder()
         .status(StatusCode::PROXY_AUTHENTICATION_REQUIRED)

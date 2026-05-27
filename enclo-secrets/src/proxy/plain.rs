@@ -5,12 +5,13 @@ use bytes::Bytes;
 use hyper::body::Incoming;
 use hyper_util::client::legacy::{Client, connect::HttpConnector};
 
-use crate::{config::Config, store::StoreStack};
+use crate::config::Config;
+use crate::store::StoreStack;
 use super::inject;
 
 pub type BoxResponse = Response<BoxBody<Bytes, hyper::Error>>;
 
-fn bad_gateway(msg: &str) -> BoxResponse {
+pub fn bad_gateway(msg: &str) -> BoxResponse {
     let body = http_body_util::Full::new(Bytes::from(format!("{msg}\n")))
         .map_err(|e| match e {})
         .boxed();

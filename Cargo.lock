@@ -581,10 +581,19 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
- "enclo-proxy-store-common",
+ "enclo-backend-protocol",
  "serde_json",
  "tokio",
  "urlencoding",
+]
+
+[[package]]
+name = "enclo-backend-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -593,7 +602,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
- "enclo-proxy-store-common",
+ "enclo-backend-protocol",
  "serde",
  "serde_json",
  "tokio",
@@ -601,7 +610,24 @@ dependencies = [
 ]
 
 [[package]]
-name = "enclo-proxy"
+name = "enclo-secret-store-aws-vault"
+version = "0.1.0"
+dependencies = [
+ "enclo-backend-protocol",
+ "tokio",
+ "urlencoding",
+]
+
+[[package]]
+name = "enclo-secret-store-pass"
+version = "0.1.0"
+dependencies = [
+ "enclo-backend-protocol",
+ "tokio",
+]
+
+[[package]]
+name = "enclo-secrets"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -610,8 +636,7 @@ dependencies = [
  "bytes",
  "clap",
  "dirs-next",
- "enclo-proxy-store-common",
- "enclo-secret-store",
+ "enclo-backend-protocol",
  "http",
  "http-body-util",
  "humantime-serde",
@@ -633,66 +658,6 @@ dependencies = [
  "tracing-subscriber",
  "wildmatch",
  "zeroize",
-]
-
-[[package]]
-name = "enclo-proxy-store-common"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "enclo-secret-store"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "enclo-proxy-store-common",
- "humantime-serde",
- "libc",
- "serde",
- "tokio",
- "toml",
- "tracing",
- "wildmatch",
- "zeroize",
-]
-
-[[package]]
-name = "enclo-secret-store-aws-vault"
-version = "0.1.0"
-dependencies = [
- "enclo-proxy-store-common",
- "tokio",
- "urlencoding",
-]
-
-[[package]]
-name = "enclo-secret-store-pass"
-version = "0.1.0"
-dependencies = [
- "enclo-proxy-store-common",
- "tokio",
-]
-
-[[package]]
-name = "enclo-secrets"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "dirs-next",
- "enclo-proxy-store-common",
- "enclo-secret-store",
- "serde",
- "serde_json",
- "tokio",
- "toml",
- "tracing",
- "tracing-subscriber",
- "wildmatch",
 ]
 
 [[package]]

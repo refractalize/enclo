@@ -7,7 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use enclo_proxy_store_common::{client as proto_client, codec, Request, ResponseResult};
+use enclo_backend_protocol::{client as proto_client, codec, Request, ResponseResult};
 use tokio::{
     io::{AsyncWriteExt, BufWriter},
     process::{Child, ChildStdin, ChildStdout, Command},
@@ -88,11 +88,7 @@ impl BackendClient {
                 Some(inner) => {
                     let write_ok = inner.writer.write_all(&bytes).await.is_ok()
                         && inner.writer.flush().await.is_ok();
-                    if write_ok {
-                        Ok(())
-                    } else {
-                        Err("failed to send request to backend process".to_string())
-                    }
+                    if write_ok { Ok(()) } else { Err("failed to send request to backend process".to_string()) }
                 }
                 None => Err("backend process is not running".to_string()),
             }

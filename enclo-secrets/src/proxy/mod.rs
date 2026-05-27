@@ -10,7 +10,9 @@ use bytes::Bytes;
 use hyper::body::Incoming;
 use hyper_util::client::legacy::{Client, connect::HttpConnector};
 
-use crate::{config::Config, store::StoreStack, tls::TlsState};
+use crate::config::Config;
+use crate::store::StoreStack;
+use crate::tls::TlsState;
 use auth::ProxyAuth;
 use plain::BoxResponse;
 

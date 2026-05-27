@@ -8,7 +8,7 @@ name = "enclo-container-client"
 path = "src/main.rs"
 
 [dependencies]
-enclo-proxy-store-common = { path = "../enclo-proxy-store-common" }
+enclo-backend-protocol = { path = "../enclo-backend-protocol" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util"] }
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }

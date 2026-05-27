@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 use clap::Parser;
-use enclo_proxy_store_common::{unix_client, ResponseResult};
+use enclo_backend_protocol::{unix_client, ResponseResult};
 
 const DEFAULT_SOCKET: &str = "/run/enclo-secrets.sock";
 

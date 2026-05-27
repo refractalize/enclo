@@ -1,5 +1,5 @@
 use std::time::Duration;
-use enclo_proxy_store_common::{server, ResponseResult};
+use enclo_backend_protocol::{server, ResponseResult};
 use tokio::{process::Command, time::timeout};
 
 const DEFAULT_TIMEOUT_SECS: u64 = 30;

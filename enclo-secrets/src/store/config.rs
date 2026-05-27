@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::path::Path;
 use std::time::Duration;
 use serde::Deserialize;
 
@@ -50,12 +49,7 @@ pub struct BackendConfig {
 }
 
 impl StoreConfig {
-    pub fn from_file(path: &Path) -> anyhow::Result<Self> {
-        let text = std::fs::read_to_string(path)
-            .map_err(|e| anyhow::anyhow!("failed to read store config {}: {e}", path.display()))?;
-        toml::from_str(&text)
-            .map_err(|e| anyhow::anyhow!("failed to parse store config {}: {e}", path.display()))
-    }
+    #[allow(dead_code)]
     pub fn backend(&self, name: &str) -> Option<&BackendConfig> {
         self.backends.iter().find(|b| b.name == name)
     }

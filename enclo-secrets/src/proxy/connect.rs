@@ -6,7 +6,9 @@ use hyper_util::rt::TokioIo;
 use tokio::{net::TcpStream, sync::Mutex};
 use tokio_rustls::rustls::pki_types::ServerName;
 
-use crate::{config::Config, store::StoreStack, tls::TlsState};
+use crate::config::Config;
+use crate::store::StoreStack;
+use crate::tls::TlsState;
 use super::plain::BoxResponse;
 
 pub fn accepted() -> BoxResponse {
@@ -53,7 +55,6 @@ async fn tunnel_inner(
         }
     });
 
-    // SendRequest is not Clone, so share it behind a Mutex.
     let upstream_sender = Arc::new(Mutex::new(upstream_sender));
     let host = host.to_string();
 

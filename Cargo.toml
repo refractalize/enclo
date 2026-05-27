@@ -1,9 +1,7 @@
 [workspace]
 members = [
     "enclo",
-    "enclo-proxy",
-    "enclo-proxy-store-common",
-    "enclo-secret-store",
+    "enclo-backend-protocol",
     "enclo-secret-store-pass",
     "enclo-secret-store-aws-vault",
     "enclo-secrets",

@@ -2,24 +2,19 @@ use std::{path::PathBuf, sync::Arc};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter},
     net::{UnixListener, UnixStream},
-    signal::unix::{signal, SignalKind},
     sync::{Notify, RwLock},
 };
-use enclo_proxy_store_common::{codec, service, Request, Response, ResponseResult};
-use enclo_secret_store::StoreStack;
+use enclo_backend_protocol::{codec, Request, Response, ResponseResult};
 use crate::access::AccessPolicy;
 use crate::config::Config;
+use crate::store::StoreStack;
 
-pub async fn run(socket_path: PathBuf, config_path: PathBuf, config: Config) -> anyhow::Result<()> {
-    let shutdown = Arc::new(Notify::new());
-
-    let store = Arc::new(
-        StoreStack::build(&config.store, Arc::clone(&shutdown), "enclo-secrets")
-            .await
-            .map_err(|e| anyhow::anyhow!("failed to start store: {e}"))?,
-    );
-    let policy = Arc::new(RwLock::new(AccessPolicy::new(&config.access)));
-
+pub async fn run(
+    socket_path: PathBuf,
+    store: Arc<StoreStack>,
+    config: Arc<RwLock<Arc<Config>>>,
+    shutdown: Arc<Notify>,
+) -> anyhow::Result<()> {
     let _ = tokio::fs::remove_file(&socket_path).await;
 
     if let Some(parent) = socket_path.parent() {
@@ -29,11 +24,7 @@ pub async fn run(socket_path: PathBuf, config_path: PathBuf, config: Config) -> 
     let listener = UnixListener::bind(&socket_path)
         .map_err(|e| anyhow::anyhow!("failed to bind {}: {e}", socket_path.display()))?;
 
-    tracing::info!("listening on {}", socket_path.display());
-
-    service::spawn_shutdown_listener(Arc::clone(&shutdown));
-
-    let mut sighup = signal(SignalKind::hangup())?;
+    tracing::info!("socket listening on {}", socket_path.display());
 
     loop {
         tokio::select! {
@@ -41,25 +32,17 @@ pub async fn run(socket_path: PathBuf, config_path: PathBuf, config: Config) -> 
                 match result {
                     Ok((stream, _)) => {
                         let store = Arc::clone(&store);
-                        let policy = Arc::clone(&policy);
-                        tokio::spawn(handle_connection(stream, store, policy));
+                        let config = Arc::clone(&config);
+                        tokio::spawn(handle_connection(stream, store, config));
                     }
                     Err(e) => {
-                        tracing::warn!("accept error: {e}");
+                        tracing::warn!("socket accept error: {e}");
                         continue;
                     }
                 }
             }
 
-            _ = sighup.recv() => {
-                match reload_config(&config_path, &store, &policy).await {
-                    Ok(()) => tracing::info!("config reloaded"),
-                    Err(e) => tracing::warn!("config reload failed: {e:#}"),
-                }
-            }
-
             _ = shutdown.notified() => {
-                tracing::info!("shutting down");
                 break;
             }
         }
@@ -69,21 +52,10 @@ pub async fn run(socket_path: PathBuf, config_path: PathBuf, config: Config) -> 
     Ok(())
 }
 
-async fn reload_config(
-    config_path: &PathBuf,
-    store: &Arc<StoreStack>,
-    policy: &Arc<RwLock<AccessPolicy>>,
-) -> anyhow::Result<()> {
-    let new_config = crate::config::Config::from_file(config_path)?;
-    store.reload(&new_config.store).await?;
-    *policy.write().await = AccessPolicy::new(&new_config.access);
-    Ok(())
-}
-
 async fn handle_connection(
     stream: UnixStream,
     store: Arc<StoreStack>,
-    policy: Arc<RwLock<AccessPolicy>>,
+    config: Arc<RwLock<Arc<Config>>>,
 ) {
     let (reader, writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
@@ -102,21 +74,25 @@ async fn handle_connection(
             Err(_) => break,
         };
 
-        let permitted = policy.read().await.is_permitted(&req.name);
+        let policy = {
+            let cfg = config.read().await;
+            AccessPolicy::new(&cfg.secrets.access)
+        };
+
+        let permitted = policy.is_permitted(&req.name);
         let result = if permitted {
             let r = store.get(&req.name).await;
             match &r {
-                ResponseResult::Ok { .. }    => tracing::info!(secret = req.name.as_str(), "secret served"),
-                ResponseResult::NotFound     => tracing::warn!(secret = req.name.as_str(), "secret not found"),
+                ResponseResult::Ok { .. } => tracing::info!(secret = req.name.as_str(), "secret served via socket"),
+                ResponseResult::NotFound => tracing::warn!(secret = req.name.as_str(), "secret not found"),
                 ResponseResult::Error { error } => tracing::error!(secret = req.name.as_str(), error, "error fetching secret"),
             }
             r
         } else {
-            tracing::warn!(secret = req.name.as_str(), "secret access denied by policy");
+            tracing::warn!(secret = req.name.as_str(), "socket secret request denied by access policy");
             ResponseResult::NotFound
         };
 
-        // Collapse any error to notFound before sending to the container.
         let container_result = match result {
             ResponseResult::Ok { value } => ResponseResult::Ok { value },
             ResponseResult::NotFound | ResponseResult::Error { .. } => ResponseResult::NotFound,

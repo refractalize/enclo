@@ -23,9 +23,7 @@ impl TlsState {
 
         let ca_key = KeyPair::from_pem(&ca_key_pem)?;
 
-        // x509-parser feature lets us reconstruct CertificateParams from an existing PEM.
         let ca_params = CertificateParams::from_ca_cert_pem(&ca_cert_pem)?;
-        // self_signed re-creates the Certificate object needed for the `signed_by` API.
         let ca_cert = ca_params.self_signed(&ca_key)?;
 
         let mut root_store = RootCertStore::empty();

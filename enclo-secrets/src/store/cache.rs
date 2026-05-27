@@ -6,13 +6,6 @@ use std::{
 use tokio::sync::{Mutex, Notify, RwLock};
 use zeroize::Zeroizing;
 
-// Wraps a secret string with two guarantees:
-//   1. Memory is mlock'd so the OS will not page it to swap.
-//   2. Memory is zeroed before it is freed (via Zeroizing).
-//
-// mlock operates at page granularity (typically 4 KB). A failed mlock is
-// logged as a warning but does not prevent the secret from being cached —
-// zeroing still applies regardless.
 struct SecretString(Zeroizing<String>);
 
 impl SecretString {
@@ -45,7 +38,6 @@ impl Drop for SecretString {
                 libc::munlock(self.0.as_ptr() as *const libc::c_void, self.0.len());
             }
         }
-        // Zeroizing zeroes the bytes when it drops after this.
     }
 }
 
@@ -86,7 +78,7 @@ impl Cache {
                 entry.last_accessed = now;
                 return Some(entry.value.as_str().to_owned());
             }
-            entries.remove(name); // Drop triggers munlock + zeroize.
+            entries.remove(name);
         }
         None
     }
@@ -118,7 +110,6 @@ fn spawn_eviction(
 
             let (idle_ttl, max_ttl) = *ttls.read().await;
             let now = Instant::now();
-            // retain() drops evicted entries in place, triggering munlock + zeroize.
             entries.lock().await.retain(|_, entry| {
                 now.duration_since(entry.last_accessed) < idle_ttl
                     && now.duration_since(entry.inserted_at) < max_ttl

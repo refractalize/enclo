@@ -8,5 +8,5 @@ name = "enclo-secret-store-pass"
 path = "src/main.rs"
 
 [dependencies]
-enclo-proxy-store-common = { path = "../enclo-proxy-store-common" }
+enclo-backend-protocol = { path = "../enclo-backend-protocol" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process"] }

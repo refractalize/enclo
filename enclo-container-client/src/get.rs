@@ -1,5 +1,5 @@
 use std::{collections::HashMap, path::Path, path::PathBuf};
-use enclo_proxy_store_common::{unix_client, ResponseResult};
+use enclo_backend_protocol::{unix_client, ResponseResult};
 use crate::util;
 
 fn silent_error() -> ! {
