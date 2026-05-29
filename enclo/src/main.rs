@@ -2,6 +2,7 @@ mod client;
 mod config;
 mod context;
 mod daemon;
+mod ipc;
 mod module;
 mod modules;
 mod orchestrator;
@@ -33,7 +34,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Start the daemon and listen for commands on D-Bus
+    /// Start the daemon (D-Bus on Linux, Unix socket on macOS)
     Serve,
 
     /// Start a container directly (blocking, no daemon required)

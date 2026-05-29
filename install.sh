@@ -24,6 +24,50 @@ if [[ "$(uname)" == "Darwin" ]]; then
         -o "${HOME}/.local/bin/enclo-secret-approve-macos"
     echo "installed: ${HOME}/.local/bin/enclo-secret-approve-macos"
 
+    # Install LaunchAgent so the daemon starts on login.
+    LAUNCH_AGENTS_DIR="${HOME}/Library/LaunchAgents"
+    mkdir -p "${LAUNCH_AGENTS_DIR}"
+    PLIST_PATH="${LAUNCH_AGENTS_DIR}/org.enclo.plist"
+    ENCLO_BIN="${HOME}/.local/bin/enclo"
+    LOG_DIR="${HOME}/Library/Logs/enclo"
+    mkdir -p "${LOG_DIR}"
+    cat > "${PLIST_PATH}" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>org.enclo</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>${ENCLO_BIN}</string>
+        <string>serve</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>${LOG_DIR}/daemon.log</string>
+    <key>StandardErrorPath</key>
+    <string>${LOG_DIR}/daemon.log</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin:${HOME}/.local/bin</string>
+    </dict>
+</dict>
+</plist>
+PLIST
+    echo "installed: ${PLIST_PATH}"
+
+    # Load (or reload) the agent.
+    if launchctl list org.enclo &>/dev/null; then
+        launchctl unload "${PLIST_PATH}" 2>/dev/null || true
+    fi
+    launchctl load "${PLIST_PATH}"
+    echo "loaded: org.enclo LaunchAgent"
+
     LINUX_BIN_DIR="${HOME}/.local/bin/linux"
     mkdir -p "${LINUX_BIN_DIR}"
 

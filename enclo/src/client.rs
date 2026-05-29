@@ -1,67 +1,243 @@
-use anyhow::{Context as _, Result};
-use zbus::proxy;
+use anyhow::Result;
+#[cfg(not(target_os = "macos"))]
+use anyhow::Context as _;
 
-#[proxy(
-    interface = "org.enclo.Manager",
-    default_service = "org.enclo",
-    default_path = "/org/enclo"
-)]
-trait Manager {
-    async fn start(&self, name: &str, config_path: &str) -> zbus::Result<()>;
-    async fn stop(&self, name: &str) -> zbus::Result<()>;
-    async fn status(&self, name: &str) -> zbus::Result<String>;
-    async fn list_containers(&self) -> zbus::Result<Vec<(String, String)>>;
-    async fn restart(&self, name: &str, config_path: &str) -> zbus::Result<()>;
-    async fn ensure_running(&self, name: &str, config_path: &str) -> zbus::Result<()>;
-    async fn reload(&self, name: &str) -> zbus::Result<()>;
-    async fn module_statuses(&self, name: &str) -> zbus::Result<Vec<(String, String, i64)>>;
+// ── Linux / D-Bus client ─────────────────────────────────────────────────────
+
+#[cfg(not(target_os = "macos"))]
+mod dbus {
+    use anyhow::{Context as _, Result};
+    use zbus::proxy;
+
+    #[proxy(
+        interface = "org.enclo.Manager",
+        default_service = "org.enclo",
+        default_path = "/org/enclo"
+    )]
+    trait Manager {
+        async fn start(&self, name: &str, config_path: &str) -> zbus::Result<()>;
+        async fn stop(&self, name: &str) -> zbus::Result<()>;
+        async fn status(&self, name: &str) -> zbus::Result<String>;
+        async fn list_containers(&self) -> zbus::Result<Vec<(String, String)>>;
+        async fn restart(&self, name: &str, config_path: &str) -> zbus::Result<()>;
+        async fn ensure_running(&self, name: &str, config_path: &str) -> zbus::Result<()>;
+        async fn reload(&self, name: &str) -> zbus::Result<()>;
+        async fn module_statuses(&self, name: &str) -> zbus::Result<Vec<(String, String, i64)>>;
+    }
+
+    pub async fn connect() -> Result<ManagerProxy<'static>> {
+        let conn = zbus::Connection::session().await
+            .context("failed to connect to D-Bus session bus (is enclo serve running?)")?;
+        ManagerProxy::new(&conn).await
+            .context("failed to connect to org.enclo — is enclo serve running?")
+    }
 }
 
-async fn connect() -> Result<ManagerProxy<'static>> {
-    let conn = zbus::Connection::session().await
-        .context("failed to connect to D-Bus session bus (is enclo serve running?)")?;
-    ManagerProxy::new(&conn).await
-        .context("failed to connect to org.enclo — is enclo serve running?")
+// ── macOS / Unix socket client ───────────────────────────────────────────────
+
+#[cfg(target_os = "macos")]
+mod socket {
+    use anyhow::{bail, Context as _, Result};
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::net::UnixStream;
+
+    use crate::ipc::{Request, Response};
+    use crate::platform::daemon_socket;
+
+    pub async fn call(req: &Request) -> Result<Response> {
+        let path = daemon_socket();
+        let stream = UnixStream::connect(&path).await
+            .with_context(|| format!(
+                "failed to connect to enclo daemon at {} — is enclo serve running?",
+                path.display()
+            ))?;
+
+        let (read_half, mut write_half) = stream.into_split();
+        let json = serde_json::to_string(req).context("failed to serialize request")?;
+        write_half.write_all((json + "\n").as_bytes()).await
+            .context("failed to send request to daemon")?;
+
+        let mut reader = BufReader::new(read_half);
+        let mut line = String::new();
+        reader.read_line(&mut line).await.context("failed to read response from daemon")?;
+
+        serde_json::from_str::<Response>(line.trim()).context("failed to parse daemon response")
+    }
+
+    pub async fn checked(req: &Request, context: &str) -> Result<Response> {
+        let resp = call(req).await?;
+        if !resp.ok {
+            bail!("{}: {}", context, resp.error.as_deref().unwrap_or("unknown error"));
+        }
+        Ok(resp)
+    }
 }
+
+// ── Public interface ─────────────────────────────────────────────────────────
 
 pub async fn start(name: &str, config_path: &str) -> Result<()> {
-    let proxy = connect().await?;
-    proxy.start(name, config_path).await
-        .with_context(|| format!("failed to start container '{}'", name))
+    #[cfg(target_os = "macos")]
+    {
+        socket::checked(
+            &crate::ipc::Request::Start { name: name.to_string(), config_path: config_path.to_string() },
+            &format!("failed to start container '{name}'"),
+        ).await?;
+        return Ok(());
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let proxy = dbus::connect().await?;
+        proxy.start(name, config_path).await
+            .with_context(|| format!("failed to start container '{name}'"))
+    }
 }
 
 pub async fn stop(name: &str) -> Result<()> {
-    let proxy = connect().await?;
-    proxy.stop(name).await
-        .with_context(|| format!("failed to stop container '{}'", name))
+    #[cfg(target_os = "macos")]
+    {
+        socket::checked(
+            &crate::ipc::Request::Stop { name: name.to_string() },
+            &format!("failed to stop container '{name}'"),
+        ).await?;
+        return Ok(());
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let proxy = dbus::connect().await?;
+        proxy.stop(name).await
+            .with_context(|| format!("failed to stop container '{name}'"))
+    }
+}
+
+pub async fn restart(name: &str, config_path: &str) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        socket::checked(
+            &crate::ipc::Request::Restart { name: name.to_string(), config_path: config_path.to_string() },
+            &format!("failed to restart container '{name}'"),
+        ).await?;
+        return Ok(());
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let proxy = dbus::connect().await?;
+        proxy.restart(name, config_path).await
+            .with_context(|| format!("failed to restart container '{name}'"))
+    }
+}
+
+pub async fn reload(name: &str) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        socket::checked(
+            &crate::ipc::Request::Reload { name: name.to_string() },
+            &format!("failed to reload container '{name}'"),
+        ).await?;
+        return Ok(());
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let proxy = dbus::connect().await?;
+        proxy.reload(name).await
+            .with_context(|| format!("failed to reload container '{name}'"))
+    }
+}
+
+pub async fn ensure_running(name: &str, config_path: &str) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        socket::checked(
+            &crate::ipc::Request::EnsureRunning { name: name.to_string(), config_path: config_path.to_string() },
+            &format!("failed to ensure container '{name}' is running"),
+        ).await?;
+        return Ok(());
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let proxy = dbus::connect().await?;
+        proxy.ensure_running(name, config_path).await
+            .with_context(|| format!("failed to ensure container '{name}' is running"))
+    }
 }
 
 pub async fn status(name: Option<&str>) -> Result<()> {
-    let proxy = connect().await?;
-    if let Some(n) = name {
-        let s = proxy.status(n).await
-            .with_context(|| format!("failed to get status for '{}'", n))?;
-        println!("{}: {}", n, s);
+    #[cfg(target_os = "macos")]
+    {
+        use crate::ipc::Request;
 
-        if let Ok(modules) = proxy.module_statuses(n).await {
-            print_module_table(&modules);
-        }
-    } else {
-        let list = proxy.list_containers().await
-            .context("failed to list containers")?;
-        if list.is_empty() {
-            println!("no containers known to daemon");
-        } else {
-            for (n, s) in &list {
-                println!("{}: {}", n, s);
-                if let Ok(modules) = proxy.module_statuses(n).await {
-                    print_module_table(&modules);
+        if let Some(n) = name {
+            let resp = socket::checked(
+                &Request::Status { name: n.to_string() },
+                &format!("failed to get status for '{n}'"),
+            ).await?;
+            let status_str = resp.value
+                .as_ref()
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            println!("{n}: {status_str}");
+
+            if let Ok(resp2) = socket::call(&Request::ModuleStatuses { name: n.to_string() }).await {
+                if resp2.ok {
+                    if let Some(v) = resp2.value {
+                        if let Ok(modules) = serde_json::from_value::<Vec<(String, String, i64)>>(v) {
+                            print_module_table(&modules);
+                        }
+                    }
                 }
-                println!();
+            }
+        } else {
+            let resp = socket::checked(&Request::ListContainers, "failed to list containers").await?;
+            if let Some(v) = resp.value {
+                if let Ok(list) = serde_json::from_value::<Vec<(String, String)>>(v) {
+                    if list.is_empty() {
+                        println!("no containers known to daemon");
+                    } else {
+                        for (n, s) in &list {
+                            println!("{n}: {s}");
+                            if let Ok(resp2) = socket::call(&Request::ModuleStatuses { name: n.clone() }).await {
+                                if resp2.ok {
+                                    if let Some(v2) = resp2.value {
+                                        if let Ok(modules) = serde_json::from_value::<Vec<(String, String, i64)>>(v2) {
+                                            print_module_table(&modules);
+                                        }
+                                    }
+                                }
+                            }
+                            println!();
+                        }
+                    }
+                }
             }
         }
+        return Ok(());
     }
-    Ok(())
+    #[cfg(not(target_os = "macos"))]
+    {
+        let proxy = dbus::connect().await?;
+        if let Some(n) = name {
+            let s = proxy.status(n).await
+                .with_context(|| format!("failed to get status for '{n}'"))?;
+            println!("{n}: {s}");
+            if let Ok(modules) = proxy.module_statuses(n).await {
+                print_module_table(&modules);
+            }
+        } else {
+            let list = proxy.list_containers().await
+                .context("failed to list containers")?;
+            if list.is_empty() {
+                println!("no containers known to daemon");
+            } else {
+                for (n, s) in &list {
+                    println!("{n}: {s}");
+                    if let Ok(modules) = proxy.module_statuses(n).await {
+                        print_module_table(&modules);
+                    }
+                    println!();
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 fn print_module_table(modules: &[(String, String, i64)]) {
@@ -71,22 +247,4 @@ fn print_module_table(modules: &[(String, String, i64)]) {
     for (mname, process, _) in modules {
         println!("  {:<width$}  {}", mname, process, width = name_width);
     }
-}
-
-pub async fn restart(name: &str, config_path: &str) -> Result<()> {
-    let proxy = connect().await?;
-    proxy.restart(name, config_path).await
-        .with_context(|| format!("failed to restart container '{}'", name))
-}
-
-pub async fn ensure_running(name: &str, config_path: &str) -> Result<()> {
-    let proxy = connect().await?;
-    proxy.ensure_running(name, config_path).await
-        .with_context(|| format!("failed to ensure container '{}' is running", name))
-}
-
-pub async fn reload(name: &str) -> Result<()> {
-    let proxy = connect().await?;
-    proxy.reload(name).await
-        .with_context(|| format!("failed to reload container '{}'", name))
 }

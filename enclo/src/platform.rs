@@ -1,5 +1,14 @@
 use std::path::{Path, PathBuf};
 
+/// Path to the daemon's Unix socket (used on macOS instead of D-Bus).
+pub fn daemon_socket() -> PathBuf {
+    let home = std::env::var("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("/root"));
+    let uid = unsafe { libc::getuid() };
+    PlatformSupport::current().runtime_dir(&home, uid).join("enclo").join("daemon.sock")
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Platform {
     Linux,

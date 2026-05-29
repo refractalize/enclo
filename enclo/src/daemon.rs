@@ -5,7 +5,9 @@ use std::time::SystemTime;
 use anyhow::Result;
 use tokio::sync::{watch, Mutex};
 use tracing::{info, warn};
-use zbus::{connection, interface};
+#[cfg(not(target_os = "macos"))]
+use zbus::connection;
+use zbus::interface;
 
 use crate::{
     config::Config,
@@ -207,6 +209,10 @@ impl Manager {
     }
 }
 
+// FIXME: Manager methods return zbus::fdo::Result even on macOS where D-Bus is not used.
+// This means error strings get the "org.freedesktop.DBus.Error.Failed:" prefix unless
+// explicitly stripped (see dispatch_request). Fix by splitting this impl: have the methods
+// return anyhow::Result and only wrap in zbus::fdo::Error in the Linux D-Bus path.
 #[interface(name = "org.enclo.Manager")]
 impl Manager {
     async fn start(&self, name: String, config_path: String) -> zbus::fdo::Result<()> {
@@ -219,7 +225,7 @@ impl Manager {
             Some(_) | None => {
                 let path = if config_path.is_empty() { None } else { Some(config_path.as_str()) };
                 self.spawn_start(name.clone(), path).await
-                    .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?
+                    .map_err(|e| zbus::fdo::Error::Failed(format!("{:#}", e)))?
             }
         };
 
@@ -254,12 +260,12 @@ impl Manager {
 
     async fn stop(&self, name: String) -> zbus::fdo::Result<()> {
         let ctx = Context::new(name.clone())
-            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
+            .map_err(|e| zbus::fdo::Error::Failed(format!("{:#}", e)))?;
 
         self.send_status(&name, ContainerStatus::Stopping).await;
 
         crate::podman::stop(&ctx.container_name).await
-            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
+            .map_err(|e| zbus::fdo::Error::Failed(format!("{:#}", e)))
     }
 
     async fn status(&self, name: String) -> zbus::fdo::Result<String> {
@@ -281,7 +287,7 @@ impl Manager {
     async fn restart(&self, name: String, config_path: String) -> zbus::fdo::Result<()> {
         // Stop the container if it's running, ignoring errors (it may already be stopped).
         let ctx = Context::new(name.clone())
-            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
+            .map_err(|e| zbus::fdo::Error::Failed(format!("{:#}", e)))?;
         self.send_status(&name, ContainerStatus::Stopping).await;
         let _ = crate::podman::stop(&ctx.container_name).await;
         self.wait_until_removed(&name, std::time::Duration::from_secs(30)).await?;
@@ -367,6 +373,7 @@ impl Manager {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 pub async fn run_daemon(config_dir: std::path::PathBuf) -> Result<()> {
     info!("daemon: starting on session bus as org.enclo");
     let manager = Manager::new(config_dir);
@@ -388,6 +395,97 @@ pub async fn run_daemon(config_dir: std::path::PathBuf) -> Result<()> {
     info!("daemon: shutting down");
     manager.stop_all().await;
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+pub async fn run_daemon(config_dir: std::path::PathBuf) -> Result<()> {
+    use tokio::net::UnixListener;
+
+    let socket_path = crate::platform::daemon_socket();
+    if let Some(parent) = socket_path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    if socket_path.exists() {
+        tokio::fs::remove_file(&socket_path).await?;
+    }
+
+    let listener = UnixListener::bind(&socket_path)?;
+    let manager = Manager::new(config_dir);
+    info!("daemon: listening on {}", socket_path.display());
+    info!("daemon: ready");
+
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    loop {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => break,
+            _ = sigterm.recv() => break,
+            result = listener.accept() => {
+                match result {
+                    Ok((stream, _)) => {
+                        let mgr = manager.clone();
+                        tokio::spawn(async move { handle_connection(stream, mgr).await; });
+                    }
+                    Err(e) => tracing::error!("daemon: accept error: {e}"),
+                }
+            }
+        }
+    }
+
+    info!("daemon: shutting down");
+    manager.stop_all().await;
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+async fn handle_connection(stream: tokio::net::UnixStream, manager: Manager) {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    let (read_half, mut write_half) = stream.into_split();
+    let mut reader = BufReader::new(read_half);
+    let mut line = String::new();
+
+    if reader.read_line(&mut line).await.is_err() || line.is_empty() {
+        return;
+    }
+
+    let resp = match serde_json::from_str::<crate::ipc::Request>(line.trim()) {
+        Ok(req) => dispatch_request(&manager, req).await,
+        Err(e) => crate::ipc::Response::error(format!("invalid request: {e}")),
+    };
+
+    let _ = write_half.write_all(
+        (serde_json::to_string(&resp).unwrap_or_default() + "\n").as_bytes(),
+    ).await;
+}
+
+#[cfg(target_os = "macos")]
+async fn dispatch_request(manager: &Manager, req: crate::ipc::Request) -> crate::ipc::Response {
+    use crate::ipc::{Request, Response};
+    fn e(err: zbus::fdo::Error) -> Response {
+        let msg = match err {
+            zbus::fdo::Error::Failed(s) => s,
+            other => other.to_string(),
+        };
+        Response::error(msg)
+    }
+    match req {
+        Request::Start { name, config_path } =>
+            match manager.start(name, config_path).await { Ok(()) => Response::ok(), Err(err) => e(err) },
+        Request::Stop { name } =>
+            match manager.stop(name).await { Ok(()) => Response::ok(), Err(err) => e(err) },
+        Request::Status { name } =>
+            match manager.status(name).await { Ok(v) => Response::ok_value(v), Err(err) => e(err) },
+        Request::ListContainers =>
+            match manager.list_containers().await { Ok(v) => Response::ok_value(v), Err(err) => e(err) },
+        Request::Restart { name, config_path } =>
+            match manager.restart(name, config_path).await { Ok(()) => Response::ok(), Err(err) => e(err) },
+        Request::EnsureRunning { name, config_path } =>
+            match manager.ensure_running(name, config_path).await { Ok(()) => Response::ok(), Err(err) => e(err) },
+        Request::Reload { name } =>
+            match manager.reload(name).await { Ok(()) => Response::ok(), Err(err) => e(err) },
+        Request::ModuleStatuses { name } =>
+            match manager.module_statuses(name).await { Ok(v) => Response::ok_value(v), Err(err) => e(err) },
+    }
 }
 
 fn classify_modules(modules: &[Arc<dyn Module>]) -> (Vec<Arc<dyn Module>>, Vec<Arc<dyn Module>>) {
