@@ -66,7 +66,7 @@ impl Manager {
     }
 
     fn resolve_config(&self, name: &str) -> std::path::PathBuf {
-        self.config_dir.join(format!("{}.toml", name))
+        self.config_dir.join("containers").join(format!("{}.toml", name))
     }
 
     async fn load(&self, name: &str, config_path: Option<&str>) -> Result<(Config, Context)> {

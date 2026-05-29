@@ -14,6 +14,8 @@ bash "${SCRIPT_DIR}/enclo-container-client/install.sh"
 bash "${SCRIPT_DIR}/enclo-aws-credentials/install.sh"
 
 if [[ "$(uname)" == "Darwin" ]]; then
+    bash "${SCRIPT_DIR}/enclo-secret-store-keychain/install.sh"
+
     echo "building enclo-secret-approve-macos..."
     swiftc -O \
         "${SCRIPT_DIR}/enclo-secret-approve-macos/main.swift" \

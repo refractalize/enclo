@@ -38,7 +38,7 @@ enum Command {
 
     /// Start a container directly (blocking, no daemon required)
     Run {
-        /// Container name; resolves ~/.config/enclo/<NAME>.toml (default: dev)
+        /// Container name; resolves ~/.config/enclo/containers/<NAME>.toml (default: dev)
         name: Option<String>,
     },
 
@@ -92,7 +92,7 @@ enum Command {
 
     /// Create missing directories in the home named volume with correct ownership
     SetupVolume {
-        /// Container name; resolves ~/.config/enclo/<NAME>.toml (default: dev)
+        /// Container name; resolves ~/.config/enclo/containers/<NAME>.toml (default: dev)
         name: Option<String>,
         /// Print what would be created without making any changes
         #[arg(long)]
@@ -105,7 +105,7 @@ fn resolve_config(explicit: Option<PathBuf>, name: Option<&str>) -> PathBuf {
         return p;
     }
     let name = name.unwrap_or("dev");
-    config_dir().join(format!("{name}.toml"))
+    config_dir().join("containers").join(format!("{name}.toml"))
 }
 
 fn config_dir() -> PathBuf {

@@ -1,0 +1,15 @@
+[package]
+name = "enclo-secret-store-keychain"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "enclo-secret-store-keychain"
+path = "src/main.rs"
+
+[dependencies]
+enclo-backend-protocol = { path = "../enclo-backend-protocol" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "2"
