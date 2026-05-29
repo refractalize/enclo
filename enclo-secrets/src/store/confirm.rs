@@ -77,10 +77,39 @@ impl Confirm {
     }
 }
 
+#[cfg(target_os = "macos")]
+async fn run_pinentry(app_name: &str, names: &[String]) -> bool {
+    let app_name = app_name.to_string();
+    let names = names.to_vec();
+    tokio::task::spawn_blocking(move || {
+        let mut cmd = std::process::Command::new("enclo-secret-approve-macos");
+        cmd.arg(&app_name);
+        for name in &names {
+            cmd.arg(name);
+        }
+        match cmd.status() {
+            Ok(s) => match s.code() {
+                Some(0) => { tracing::info!("enclo-secret-approve-macos: approved"); true }
+                Some(1) => { tracing::info!("enclo-secret-approve-macos: denied"); false }
+                code => {
+                    tracing::error!("enclo-secret-approve-macos: unexpected exit {:?}", code);
+                    false
+                }
+            },
+            Err(e) => {
+                tracing::error!("enclo-secret-approve-macos: failed to run: {e}");
+                false
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|_| { tracing::error!("enclo-secret-approve-macos task panicked"); false })
+}
+
+#[cfg(not(target_os = "macos"))]
 async fn run_pinentry(app_name: &str, names: &[String]) -> bool {
     let list = names.iter().map(|n| format!("  {n}")).collect::<Vec<_>>().join("\n");
     let query = format!("{app_name} wants to access the following secrets:\n\n{list}\n\nAllow?");
-
     tokio::task::spawn_blocking(move || {
         let mut dialog = match pinentry::ConfirmationDialog::with_default_binary() {
             Some(d) => d,
@@ -91,23 +120,11 @@ async fn run_pinentry(app_name: &str, names: &[String]) -> bool {
         };
         dialog.with_ok("Allow").with_cancel("Deny");
         match dialog.confirm(&query) {
-            Ok(true) => {
-                tracing::info!("pinentry: confirmation approved");
-                true
-            }
-            Ok(false) => {
-                tracing::info!("pinentry: confirmation denied (user cancelled)");
-                false
-            }
-            Err(e) => {
-                tracing::info!("pinentry: confirmation denied ({})", e);
-                false
-            }
+            Ok(true) => { tracing::info!("pinentry: approved"); true }
+            Ok(false) => { tracing::info!("pinentry: denied (cancelled)"); false }
+            Err(e) => { tracing::info!("pinentry: denied ({})", e); false }
         }
     })
     .await
-    .unwrap_or_else(|_| {
-        tracing::error!("pinentry task panicked");
-        false
-    })
+    .unwrap_or_else(|_| { tracing::error!("pinentry task panicked"); false })
 }

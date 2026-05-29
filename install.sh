@@ -14,6 +14,14 @@ bash "${SCRIPT_DIR}/enclo-container-client/install.sh"
 bash "${SCRIPT_DIR}/enclo-aws-credentials/install.sh"
 
 if [[ "$(uname)" == "Darwin" ]]; then
+    echo "building enclo-secret-approve-macos..."
+    swiftc -O \
+        "${SCRIPT_DIR}/enclo-secret-approve-macos/main.swift" \
+        -framework AppKit \
+        -framework LocalAuthentication \
+        -o "${HOME}/.local/bin/enclo-secret-approve-macos"
+    echo "installed: ${HOME}/.local/bin/enclo-secret-approve-macos"
+
     LINUX_BIN_DIR="${HOME}/.local/bin/linux"
     mkdir -p "${LINUX_BIN_DIR}"
 
