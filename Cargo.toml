@@ -2,6 +2,7 @@
 members = [
     "enclo",
     "enclo-backend-protocol",
+    "enclo-container-bridge",
     "enclo-secret-store-pass",
     "enclo-secret-store-aws-vault",
     "enclo-secrets",

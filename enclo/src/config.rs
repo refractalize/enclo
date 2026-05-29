@@ -53,11 +53,11 @@ pub struct ModulesConfig {
     #[serde(default)]
     pub podman_socket: PodmanSocketConfig,
     #[serde(default)]
-    pub proxy: EncloProxyConfig,
-    #[serde(default)]
     pub nvidia: NvidiaConfig,
     #[serde(default)]
     pub secrets: SecretsConfig,
+    #[serde(default)]
+    pub secrets_bridge: SecretsBridgeConfig,
     #[serde(default)]
     pub aws_credentials: AwsCredentialsConfig,
     #[serde(default)]
@@ -69,24 +69,13 @@ pub struct ModulesConfig {
 #[derive(Debug, Deserialize, Default, Clone, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ProxyMode {
-    /// Set $INSECTJAR_PROXY; traffic is only routed through the proxy when the
-    /// user explicitly runs commands via `enclo proxy -- <cmd>`.
+    /// Set $ENCLO_PROXY; traffic is only routed through the proxy when the
+    /// user explicitly opts in.
     #[default]
     Explicit,
     /// Set $HTTP_PROXY/$HTTPS_PROXY directly so all HTTP traffic goes through
     /// the proxy automatically.
     Implicit,
-}
-
-#[derive(Debug, Deserialize, Default, Clone)]
-pub struct EncloProxyConfig {
-    #[serde(default)]
-    pub enabled: bool,
-    /// Path to the enclo-proxy config file.
-    pub config: String,
-    /// Controls how the proxy is exposed inside the container.
-    #[serde(default)]
-    pub mode: ProxyMode,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -190,9 +179,21 @@ fn default_dbus_interfaces() -> Vec<String> {
 pub struct SecretsConfig {
     #[serde(default)]
     pub enabled: bool,
-    /// Path to the enclo-secrets config file (store routes, backends, cache, confirm).
+    /// Path to the unified enclo-secrets config file.
     #[serde(default)]
     pub config: String,
+    /// Controls how the proxy URL is exposed inside the container (if proxy is enabled in config).
+    #[serde(default)]
+    pub mode: ProxyMode,
+}
+
+#[derive(Debug, Deserialize, Default, Clone)]
+pub struct SecretsBridgeConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Socket path inside the container that enclo-container-bridge will create.
+    /// Defaults to /run/enclo-secrets.sock.
+    pub socket_path: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default, Clone)]
@@ -221,10 +222,6 @@ impl Config {
     fn resolve_paths(&mut self, base: &std::path::Path) {
         for vol in &mut self.container.volumes {
             *vol = resolve_volume_host(base, vol);
-        }
-        let c = &self.modules.proxy.config;
-        if !c.is_empty() {
-            self.modules.proxy.config = resolve_str(base, c);
         }
         let c = &self.modules.secrets.config;
         if !c.is_empty() {

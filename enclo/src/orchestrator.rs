@@ -135,6 +135,12 @@ impl Orchestrator {
             return Err(error);
         }
 
+        for module in &setup.active {
+            if let Err(error) = module.post_start(ctx).await {
+                warn!("module {} post_start error: {:#}", module.name(), error);
+            }
+        }
+
         notify_ready_ok(ready);
 
         tokio::select! {

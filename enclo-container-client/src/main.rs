@@ -7,8 +7,8 @@ mod util;
 use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 
-/// Default socket path inside the container (mounted by the secrets module).
-const DEFAULT_SOCKET: &str = "/run/enclo-secrets.sock";
+/// Default socket path inside the container.
+const DEFAULT_SOCKET: &str = "/tmp/enclo-secrets.sock";
 
 #[derive(Parser)]
 #[command(name = "enclo", about = "enclo container client")]

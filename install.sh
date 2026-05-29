@@ -7,7 +7,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cargo build --release --manifest-path "${SCRIPT_DIR}/Cargo.toml"
 
 bash "${SCRIPT_DIR}/enclo/install.sh"
-bash "${SCRIPT_DIR}/enclo-proxy/install.sh"
 bash "${SCRIPT_DIR}/enclo-secret-store-pass/install.sh"
 bash "${SCRIPT_DIR}/enclo-secret-store-aws-vault/install.sh"
 bash "${SCRIPT_DIR}/enclo-secrets/install.sh"
@@ -29,11 +28,14 @@ if [[ "$(uname)" == "Darwin" ]]; then
         --workdir /workspace \
         docker.io/library/rust:alpine \
         sh -c 'CARGO_TARGET_DIR=/tmp/build cargo build --release \
+                   -p enclo-container-bridge \
                    -p enclo-container-client \
                    -p enclo-aws-credentials && \
+               install -Dm755 /tmp/build/release/enclo-container-bridge /output/ && \
                install -Dm755 /tmp/build/release/enclo-container-client /output/ && \
                install -Dm755 /tmp/build/release/enclo-aws-credentials /output/'
 
+    echo "installed: ${LINUX_BIN_DIR}/enclo-container-bridge"
     echo "installed: ${LINUX_BIN_DIR}/enclo-container-client"
     echo "installed: ${LINUX_BIN_DIR}/enclo-aws-credentials"
 fi

@@ -1,0 +1,17 @@
+[package]
+name = "enclo-container-bridge"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "enclo-container-bridge"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+enclo-backend-protocol = { path = "../enclo-backend-protocol" }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"

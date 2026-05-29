@@ -162,3 +162,28 @@ pub async fn ensure_unix_socket_connectable(path: &Path, description: &str) -> a
         .map(|_| ())
         .map_err(|e| anyhow::anyhow!("{description} exists at {} but is not connectable: {}", path.display(), e))
 }
+
+pub async fn wait_for_container_socket(
+    container: &str,
+    socket_path: &str,
+    attempts: u32,
+    interval: Duration,
+    description: &str,
+) -> anyhow::Result<()> {
+    for _ in 0..attempts {
+        let ready = tokio::process::Command::new("podman")
+            .args(["exec", container, "test", "-S", socket_path])
+            .status()
+            .await
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if ready {
+            return Ok(());
+        }
+        tokio::time::sleep(interval).await;
+    }
+    anyhow::bail!(
+        "{description} never appeared at {socket_path} in container {container} after {}ms",
+        attempts as u64 * interval.as_millis() as u64,
+    )
+}

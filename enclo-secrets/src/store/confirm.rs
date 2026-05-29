@@ -78,76 +78,36 @@ impl Confirm {
 }
 
 async fn run_pinentry(app_name: &str, names: &[String]) -> bool {
-    let list = names
-        .iter()
-        .map(|n| format!("  {n}"))
-        .collect::<Vec<_>>()
-        .join("\n");
+    let list = names.iter().map(|n| format!("  {n}")).collect::<Vec<_>>().join("\n");
+    let query = format!("{app_name} wants to access the following secrets:\n\n{list}\n\nAllow?");
 
-    let desc = format!(
-        "{app_name} wants to access the following secrets:%0A%0A{}\n\nAllow?",
-        list.replace(' ', "%20").replace('\n', "%0A")
-    );
-
-    let mut child = match tokio::process::Command::new("pinentry")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-    {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::error!("failed to spawn pinentry: {e}");
-            return false;
-        }
-    };
-
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-
-    let stdin = child.stdin.take().unwrap();
-    let stdout = child.stdout.take().unwrap();
-    let mut reader = BufReader::new(stdout);
-    let mut writer = stdin;
-    let mut line = String::new();
-
-    async fn read_response(reader: &mut tokio::io::BufReader<tokio::process::ChildStdout>, line: &mut String) -> bool {
-        loop {
-            line.clear();
-            if reader.read_line(line).await.is_err() {
+    tokio::task::spawn_blocking(move || {
+        let mut dialog = match pinentry::ConfirmationDialog::with_default_binary() {
+            Some(d) => d,
+            None => {
+                tracing::error!("pinentry binary not found");
                 return false;
             }
-            if !line.starts_with("S ") {
-                return true;
+        };
+        dialog.with_ok("Allow").with_cancel("Deny");
+        match dialog.confirm(&query) {
+            Ok(true) => {
+                tracing::info!("pinentry: confirmation approved");
+                true
+            }
+            Ok(false) => {
+                tracing::info!("pinentry: confirmation denied (user cancelled)");
+                false
+            }
+            Err(e) => {
+                tracing::info!("pinentry: confirmation denied ({})", e);
+                false
             }
         }
-    }
-
-    if !read_response(&mut reader, &mut line).await {
-        return false;
-    }
-
-    macro_rules! send {
-        ($cmd:expr) => {{
-            if writer.write_all($cmd.as_bytes()).await.is_err() {
-                tracing::warn!("pinentry write error");
-                return false;
-            }
-            if !read_response(&mut reader, &mut line).await {
-                tracing::warn!("pinentry read error");
-                return false;
-            }
-        }};
-    }
-
-    send!(format!("SETDESC {desc}\n"));
-    send!("SETOK Allow\n");
-    send!("SETCANCEL Deny\n");
-    send!("CONFIRM\n");
-
-    let approved = line.starts_with("OK");
-
-    send!("BYE\n");
-    let _ = child.wait().await;
-
-    approved
+    })
+    .await
+    .unwrap_or_else(|_| {
+        tracing::error!("pinentry task panicked");
+        false
+    })
 }

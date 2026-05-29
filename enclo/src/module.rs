@@ -85,6 +85,13 @@ pub trait Module: Send + Sync {
         Ok(())
     }
 
+    /// Called after the container is confirmed running. Use this for anything
+    /// that requires the container to be up (e.g. podman exec).
+    async fn post_start(&self, ctx: &Context) -> anyhow::Result<()> {
+        let _ = ctx;
+        Ok(())
+    }
+
     async fn reload(&self, ctx: &Context) -> anyhow::Result<()> {
         let _ = ctx;
         Ok(())
