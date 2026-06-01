@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 /// Path to the daemon's Unix socket (used on macOS instead of D-Bus).
+#[cfg(target_os = "macos")]
 pub fn daemon_socket() -> PathBuf {
     let home = std::env::var("HOME")
         .map(PathBuf::from)

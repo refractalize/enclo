@@ -1,5 +1,6 @@
 use enclo_backend_protocol::{server, ResponseResult};
 
+#[cfg(target_os = "macos")]
 const SERVICE: &str = "org.enclo";
 
 #[tokio::main]

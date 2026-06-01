@@ -14,7 +14,7 @@ mod dbus {
         default_service = "org.enclo",
         default_path = "/org/enclo"
     )]
-    trait Manager {
+    pub(super) trait Manager {
         async fn start(&self, name: &str, config_path: &str) -> zbus::Result<()>;
         async fn stop(&self, name: &str) -> zbus::Result<()>;
         async fn status(&self, name: &str) -> zbus::Result<String>;
