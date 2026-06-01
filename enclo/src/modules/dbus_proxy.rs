@@ -91,7 +91,7 @@ impl Module for DbusProxy {
     }
 
     async fn module_status(&self) -> ModuleStatus {
-        ModuleStatus { process_alive: self.child.process_alive().await }
+        ModuleStatus { process_alive: self.child.process_alive().await, managed_exec_ids: Vec::new() }
     }
 
     async fn teardown(&self, _ctx: &Context) -> anyhow::Result<()> {

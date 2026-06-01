@@ -7,13 +7,14 @@ use serde::{Deserialize, Serialize};
 #[serde(tag = "cmd", rename_all = "snake_case")]
 pub enum Request {
     Start { name: String, config_path: String },
-    Stop { name: String },
+    Stop { name: String, #[serde(default)] force: bool },
     Status { name: String },
     ListContainers,
-    Restart { name: String, config_path: String },
+    Restart { name: String, config_path: String, #[serde(default)] force: bool },
     EnsureRunning { name: String, config_path: String },
     Reload { name: String },
     ModuleStatuses { name: String },
+    UserExecCount { name: String },
 }
 
 /// Single-line JSON response written back by the daemon.

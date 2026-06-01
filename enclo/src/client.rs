@@ -16,13 +16,14 @@ mod dbus {
     )]
     pub(super) trait Manager {
         async fn start(&self, name: &str, config_path: &str) -> zbus::Result<()>;
-        async fn stop(&self, name: &str) -> zbus::Result<()>;
+        async fn stop(&self, name: &str, force: bool) -> zbus::Result<()>;
         async fn status(&self, name: &str) -> zbus::Result<String>;
         async fn list_containers(&self) -> zbus::Result<Vec<(String, String)>>;
-        async fn restart(&self, name: &str, config_path: &str) -> zbus::Result<()>;
+        async fn restart(&self, name: &str, config_path: &str, force: bool) -> zbus::Result<()>;
         async fn ensure_running(&self, name: &str, config_path: &str) -> zbus::Result<()>;
         async fn reload(&self, name: &str) -> zbus::Result<()>;
         async fn module_statuses(&self, name: &str) -> zbus::Result<Vec<(String, String, i64)>>;
+        async fn user_exec_count(&self, name: &str) -> zbus::Result<u32>;
     }
 
     pub async fn connect() -> Result<ManagerProxy<'static>> {
@@ -92,11 +93,11 @@ pub async fn start(name: &str, config_path: &str) -> Result<()> {
     }
 }
 
-pub async fn stop(name: &str) -> Result<()> {
+pub async fn stop(name: &str, force: bool) -> Result<()> {
     #[cfg(target_os = "macos")]
     {
         socket::checked(
-            &crate::ipc::Request::Stop { name: name.to_string() },
+            &crate::ipc::Request::Stop { name: name.to_string(), force },
             &format!("failed to stop container '{name}'"),
         ).await?;
         return Ok(());
@@ -104,16 +105,16 @@ pub async fn stop(name: &str) -> Result<()> {
     #[cfg(not(target_os = "macos"))]
     {
         let proxy = dbus::connect().await?;
-        proxy.stop(name).await
+        proxy.stop(name, force).await
             .with_context(|| format!("failed to stop container '{name}'"))
     }
 }
 
-pub async fn restart(name: &str, config_path: &str) -> Result<()> {
+pub async fn restart(name: &str, config_path: &str, force: bool) -> Result<()> {
     #[cfg(target_os = "macos")]
     {
         socket::checked(
-            &crate::ipc::Request::Restart { name: name.to_string(), config_path: config_path.to_string() },
+            &crate::ipc::Request::Restart { name: name.to_string(), config_path: config_path.to_string(), force },
             &format!("failed to restart container '{name}'"),
         ).await?;
         return Ok(());
@@ -121,7 +122,7 @@ pub async fn restart(name: &str, config_path: &str) -> Result<()> {
     #[cfg(not(target_os = "macos"))]
     {
         let proxy = dbus::connect().await?;
-        proxy.restart(name, config_path).await
+        proxy.restart(name, config_path, force).await
             .with_context(|| format!("failed to restart container '{name}'"))
     }
 }
@@ -174,7 +175,12 @@ pub async fn status(name: Option<&str>) -> Result<()> {
                 .as_ref()
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown");
-            println!("{n}: {status_str}");
+            let sessions = socket::call(&Request::UserExecCount { name: n.to_string() }).await
+                .ok()
+                .and_then(|r| r.value)
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32;
+            println!("{}", format_status_line(n, status_str, sessions));
 
             if let Ok(resp2) = socket::call(&Request::ModuleStatuses { name: n.to_string() }).await {
                 if resp2.ok {
@@ -193,7 +199,12 @@ pub async fn status(name: Option<&str>) -> Result<()> {
                         println!("no containers known to daemon");
                     } else {
                         for (n, s) in &list {
-                            println!("{n}: {s}");
+                            let sessions = socket::call(&Request::UserExecCount { name: n.clone() }).await
+                                .ok()
+                                .and_then(|r| r.value)
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0) as u32;
+                            println!("{}", format_status_line(n, s, sessions));
                             if let Ok(resp2) = socket::call(&Request::ModuleStatuses { name: n.clone() }).await {
                                 if resp2.ok {
                                     if let Some(v2) = resp2.value {
@@ -217,7 +228,8 @@ pub async fn status(name: Option<&str>) -> Result<()> {
         if let Some(n) = name {
             let s = proxy.status(n).await
                 .with_context(|| format!("failed to get status for '{n}'"))?;
-            println!("{n}: {s}");
+            let sessions = proxy.user_exec_count(n).await.unwrap_or(0);
+            println!("{}", format_status_line(n, &s, sessions));
             if let Ok(modules) = proxy.module_statuses(n).await {
                 print_module_table(&modules);
             }
@@ -228,7 +240,8 @@ pub async fn status(name: Option<&str>) -> Result<()> {
                 println!("no containers known to daemon");
             } else {
                 for (n, s) in &list {
-                    println!("{n}: {s}");
+                    let sessions = proxy.user_exec_count(n).await.unwrap_or(0);
+                    println!("{}", format_status_line(n, s, sessions));
                     if let Ok(modules) = proxy.module_statuses(n).await {
                         print_module_table(&modules);
                     }
@@ -237,6 +250,15 @@ pub async fn status(name: Option<&str>) -> Result<()> {
             }
         }
         Ok(())
+    }
+}
+
+fn format_status_line(name: &str, status: &str, user_sessions: u32) -> String {
+    if user_sessions == 0 {
+        format!("{name}: {status}")
+    } else {
+        let noun = if user_sessions == 1 { "session" } else { "sessions" };
+        format!("{name}: {status} ({user_sessions} exec {noun})")
     }
 }
 

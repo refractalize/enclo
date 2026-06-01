@@ -258,7 +258,42 @@ impl Manager {
         }
     }
 
-    async fn stop(&self, name: String) -> zbus::fdo::Result<()> {
+    async fn check_user_sessions(&self, name: &str) -> zbus::fdo::Result<()> {
+        let all_enabled = {
+            let guard = self.inner.lock().await;
+            guard.containers.get(name)
+                .map(|e| e.all_enabled.clone())
+                .unwrap_or_default()
+        };
+
+        let mut managed = Vec::new();
+        for module in &all_enabled {
+            managed.extend(module.module_status().await.managed_exec_ids);
+        }
+
+        let ctx = Context::new(name.to_string())
+            .map_err(|e| zbus::fdo::Error::Failed(format!("{:#}", e)))?;
+
+        let user_sessions = crate::podman::user_exec_sessions(&ctx.container_name, &managed)
+            .await
+            .map_err(|e| zbus::fdo::Error::Failed(format!("{:#}", e)))?;
+
+        if !user_sessions.is_empty() {
+            return Err(zbus::fdo::Error::Failed(format!(
+                "container '{}' has {} active exec session(s); use --force to stop anyway",
+                name,
+                user_sessions.len()
+            )));
+        }
+
+        Ok(())
+    }
+
+    async fn stop(&self, name: String, force: bool) -> zbus::fdo::Result<()> {
+        if !force {
+            self.check_user_sessions(&name).await?;
+        }
+
         let ctx = Context::new(name.clone())
             .map_err(|e| zbus::fdo::Error::Failed(format!("{:#}", e)))?;
 
@@ -284,8 +319,11 @@ impl Manager {
             .collect())
     }
 
-    async fn restart(&self, name: String, config_path: String) -> zbus::fdo::Result<()> {
-        // Stop the container if it's running, ignoring errors (it may already be stopped).
+    async fn restart(&self, name: String, config_path: String, force: bool) -> zbus::fdo::Result<()> {
+        if !force {
+            self.check_user_sessions(&name).await?;
+        }
+
         let ctx = Context::new(name.clone())
             .map_err(|e| zbus::fdo::Error::Failed(format!("{:#}", e)))?;
         self.send_status(&name, ContainerStatus::Stopping).await;
@@ -357,6 +395,29 @@ impl Manager {
             out.push((module.name().to_string(), process_str, secs));
         }
         Ok(out)
+    }
+
+    async fn user_exec_count(&self, name: String) -> zbus::fdo::Result<u32> {
+        let all_enabled = {
+            let guard = self.inner.lock().await;
+            guard.containers.get(&name)
+                .map(|e| e.all_enabled.clone())
+                .unwrap_or_default()
+        };
+
+        let mut managed = Vec::new();
+        for module in &all_enabled {
+            managed.extend(module.module_status().await.managed_exec_ids);
+        }
+
+        let ctx = Context::new(name.clone())
+            .map_err(|e| zbus::fdo::Error::Failed(format!("{:#}", e)))?;
+
+        let sessions = crate::podman::user_exec_sessions(&ctx.container_name, &managed)
+            .await
+            .unwrap_or_default();
+
+        Ok(sessions.len() as u32)
     }
 
     async fn ensure_running(&self, name: String, config_path: String) -> zbus::fdo::Result<()> {
@@ -471,20 +532,22 @@ async fn dispatch_request(manager: &Manager, req: crate::ipc::Request) -> crate:
     match req {
         Request::Start { name, config_path } =>
             match manager.start(name, config_path).await { Ok(()) => Response::ok(), Err(err) => e(err) },
-        Request::Stop { name } =>
-            match manager.stop(name).await { Ok(()) => Response::ok(), Err(err) => e(err) },
+        Request::Stop { name, force } =>
+            match manager.stop(name, force).await { Ok(()) => Response::ok(), Err(err) => e(err) },
         Request::Status { name } =>
             match manager.status(name).await { Ok(v) => Response::ok_value(v), Err(err) => e(err) },
         Request::ListContainers =>
             match manager.list_containers().await { Ok(v) => Response::ok_value(v), Err(err) => e(err) },
-        Request::Restart { name, config_path } =>
-            match manager.restart(name, config_path).await { Ok(()) => Response::ok(), Err(err) => e(err) },
+        Request::Restart { name, config_path, force } =>
+            match manager.restart(name, config_path, force).await { Ok(()) => Response::ok(), Err(err) => e(err) },
         Request::EnsureRunning { name, config_path } =>
             match manager.ensure_running(name, config_path).await { Ok(()) => Response::ok(), Err(err) => e(err) },
         Request::Reload { name } =>
             match manager.reload(name).await { Ok(()) => Response::ok(), Err(err) => e(err) },
         Request::ModuleStatuses { name } =>
             match manager.module_statuses(name).await { Ok(v) => Response::ok_value(v), Err(err) => e(err) },
+        Request::UserExecCount { name } =>
+            match manager.user_exec_count(name).await { Ok(v) => Response::ok_value(v), Err(err) => e(err) },
     }
 }
 

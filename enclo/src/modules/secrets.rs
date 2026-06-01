@@ -7,7 +7,7 @@ use std::{
 
 use async_trait::async_trait;
 use serde::Deserialize;
-use tokio::{process::Command, sync::Notify};
+use tokio::{process::Command, sync::{Mutex, Notify}};
 
 use crate::{
     config::{ProxyMode, SecretsConfig},
@@ -29,6 +29,7 @@ pub struct Secrets {
     config: SecretsConfig,
     child: ManagedChild,
     bridge_cancel: Arc<Notify>,
+    bridge_exec_id: Mutex<Option<String>>,
 }
 
 impl Secrets {
@@ -37,6 +38,7 @@ impl Secrets {
             config,
             child: ManagedChild::new("enclo-secrets"),
             bridge_cancel: Arc::new(Notify::new()),
+            bridge_exec_id: Mutex::new(None),
         }
     }
 }
@@ -154,7 +156,7 @@ impl Module for Secrets {
         match ctx.platform {
             Platform::Linux => {
                 // Mount the socket and in-container client binary directly.
-                out.volumes.push(VolumeMount::new(&socket_path, "/tmp/enclo-secrets.sock"));
+                out.volumes.push(VolumeMount::new(&socket_path, "/run/enclo/secrets.sock"));
                 let container_binary = support::resolve_container_binary_path("enclo-secrets")?;
                 out.volumes.push(
                     VolumeMount::new(&container_binary, "/usr/local/bin/enclo-secrets").with_options("ro"),
@@ -231,7 +233,9 @@ impl Module for Secrets {
 
         let host_socket = ctx.enclo_dir.join("secrets.sock");
         let container_socket = self.config.bridge_socket_path.clone()
-            .unwrap_or_else(|| "/tmp/enclo-secrets.sock".into());
+            .unwrap_or_else(|| "/run/enclo/secrets.sock".into());
+
+        let exec_ids_before = crate::podman::exec_ids(&ctx.container_name).await.unwrap_or_default();
 
         tokio::spawn(bridge_loop(
             ctx.container_name.clone(),
@@ -249,13 +253,29 @@ impl Module for Secrets {
             Duration::from_millis(200),
             "enclo-container-bridge socket",
         )
-        .await
+        .await?;
+
+        let exec_ids_after = crate::podman::exec_ids(&ctx.container_name).await.unwrap_or_default();
+        let new_id = exec_ids_after.into_iter().find(|id| !exec_ids_before.contains(id));
+        if let Some(id) = new_id {
+            tracing::debug!("bridge exec session id: {id}");
+            *self.bridge_exec_id.lock().await = Some(id);
+        } else {
+            tracing::warn!("could not determine bridge exec session id");
+        }
+
+        Ok(())
     }
 
     fn can_reload(&self) -> bool { true }
 
     async fn module_status(&self) -> ModuleStatus {
-        ModuleStatus { process_alive: self.child.process_alive().await }
+        let managed_exec_ids = self.bridge_exec_id.lock().await
+            .iter().cloned().collect();
+        ModuleStatus {
+            process_alive: self.child.process_alive().await,
+            managed_exec_ids,
+        }
     }
 
     async fn reload(&self, _ctx: &Context) -> anyhow::Result<()> {

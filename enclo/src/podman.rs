@@ -92,6 +92,32 @@ pub async fn remove(container: &str) -> Result<()> {
     Ok(())
 }
 
+pub async fn exec_ids(container: &str) -> Result<Vec<String>> {
+    let out = Command::new("podman")
+        .args(["inspect", "--format", "{{json .ExecIDs}}", container])
+        .output()
+        .await
+        .context("failed to spawn podman inspect")?;
+
+    if !out.status.success() {
+        return Ok(Vec::new());
+    }
+
+    let text = String::from_utf8_lossy(&out.stdout);
+    let trimmed = text.trim();
+    if trimmed.is_empty() || trimmed == "null" {
+        return Ok(Vec::new());
+    }
+
+    serde_json::from_str::<Vec<String>>(trimmed)
+        .context("failed to parse ExecIDs from podman inspect")
+}
+
+pub async fn user_exec_sessions(container: &str, managed: &[String]) -> Result<Vec<String>> {
+    let all = exec_ids(container).await?;
+    Ok(all.into_iter().filter(|id| !managed.contains(id)).collect())
+}
+
 pub async fn container_state(container: &str) -> Result<String> {
     let out = Command::new("podman")
         .args(["inspect", "--format", "{{.State.Status}}", container])

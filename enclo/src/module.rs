@@ -64,6 +64,8 @@ impl VolumeMount {
 pub struct ModuleStatus {
     /// None = no managed process; Some(true) = process alive; Some(false) = process exited
     pub process_alive: Option<bool>,
+    /// Exec session IDs (from `podman inspect .ExecIDs`) that this module started and manages.
+    pub managed_exec_ids: Vec<String>,
 }
 
 #[async_trait]
@@ -98,6 +100,6 @@ pub trait Module: Send + Sync {
     }
 
     async fn module_status(&self) -> ModuleStatus {
-        ModuleStatus { process_alive: None }
+        ModuleStatus { process_alive: None, managed_exec_ids: Vec::new() }
     }
 }

@@ -53,12 +53,18 @@ enum Command {
     Stop {
         /// Container name (default: dev)
         name: Option<String>,
+        /// Stop even if there are active exec sessions
+        #[arg(long)]
+        force: bool,
     },
 
     /// Ask the daemon to restart a container (stop then start)
     Restart {
         /// Container name (default: dev)
         name: Option<String>,
+        /// Restart even if there are active exec sessions
+        #[arg(long)]
+        force: bool,
     },
 
     /// Enter a running container (starts it via the daemon if necessary)
@@ -150,15 +156,15 @@ async fn main() -> Result<()> {
             client::start(&name, &path.to_string_lossy()).await
         }
 
-        Command::Stop { name } => {
+        Command::Stop { name, force } => {
             let name = resolve_name(name);
-            client::stop(&name).await
+            client::stop(&name, force).await
         }
 
-        Command::Restart { name } => {
+        Command::Restart { name, force } => {
             let name = resolve_name(name);
             let path = resolve_config(cli.config.clone(), Some(&name));
-            client::restart(&name, &path.to_string_lossy()).await
+            client::restart(&name, &path.to_string_lossy(), force).await
         }
 
         Command::Reload { name } => {

@@ -163,7 +163,7 @@ impl Module for EncloProxy {
     fn can_reload(&self) -> bool { true }
 
     async fn module_status(&self) -> ModuleStatus {
-        ModuleStatus { process_alive: self.child.process_alive().await }
+        ModuleStatus { process_alive: self.child.process_alive().await, managed_exec_ids: Vec::new() }
     }
 
     async fn reload(&self, _ctx: &Context) -> anyhow::Result<()> {

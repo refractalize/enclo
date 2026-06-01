@@ -7,8 +7,7 @@ mod util;
 use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 
-/// Default socket path inside the container.
-const DEFAULT_SOCKET: &str = "/tmp/enclo-secrets.sock";
+use enclo_backend_protocol::DEFAULT_SECRETS_SOCKET;
 
 #[derive(Parser)]
 #[command(name = "enclo", about = "enclo container client")]
@@ -22,7 +21,7 @@ enum Command {
     /// Fetch one or more secrets and print them as a JSON object to stdout
     Get {
         /// Path to the enclo-secrets Unix socket
-        #[arg(long, short = 's', default_value = DEFAULT_SOCKET)]
+        #[arg(long, short = 's', default_value = DEFAULT_SECRETS_SOCKET)]
         socket: PathBuf,
 
         /// Path to the client config file (default: $XDG_CONFIG_HOME/enclo/client.toml)
@@ -44,7 +43,7 @@ enum Command {
     /// Fetch secrets and run a command with them set as environment variables
     Run {
         /// Path to the enclo-secrets Unix socket
-        #[arg(long, short = 's', default_value = DEFAULT_SOCKET)]
+        #[arg(long, short = 's', default_value = DEFAULT_SECRETS_SOCKET)]
         socket: PathBuf,
 
         /// Path to the client config file (default: $XDG_CONFIG_HOME/enclo/client.toml)

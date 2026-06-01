@@ -1,14 +1,12 @@
 use std::path::PathBuf;
 use clap::Parser;
-use enclo_backend_protocol::{unix_client, ResponseResult};
-
-const DEFAULT_SOCKET: &str = "/run/enclo-secrets.sock";
+use enclo_backend_protocol::{unix_client, ResponseResult, DEFAULT_SECRETS_SOCKET};
 
 #[derive(Parser)]
 #[command(name = "enclo-aws-credentials", about = "Fetch AWS credentials from enclo-secrets")]
 struct Cli {
     /// Path to the enclo-secrets Unix socket
-    #[arg(long, short = 's', default_value = DEFAULT_SOCKET)]
+    #[arg(long, short = 's', default_value = DEFAULT_SECRETS_SOCKET)]
     socket: PathBuf,
 
     /// AWS credentials profile to retrieve
