@@ -97,9 +97,7 @@ impl PlatformSupport {
 
     pub fn supports_module(&self, module_name: &str) -> bool {
         match self {
-            // secrets_bridge uses podman exec to tunnel over the Podman VM boundary;
-            // on Linux the socket is mounted directly so the bridge is not needed.
-            Self::Linux => !matches!(module_name, "secrets_bridge"),
+            Self::Linux => true,
             Self::MacOs => !matches!(
                 module_name,
                 "dbus_proxy"

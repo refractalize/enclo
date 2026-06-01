@@ -1,7 +1,13 @@
-use std::net::SocketAddr;
+use std::{
+    net::SocketAddr,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 
 use async_trait::async_trait;
 use serde::Deserialize;
+use tokio::{process::Command, sync::Notify};
 
 use crate::{
     config::{ProxyMode, SecretsConfig},
@@ -16,15 +22,22 @@ const SOCKET_POLL_INTERVAL_MS: u64 = 200;
 const PROXY_POLL_ATTEMPTS: u32 = 60;
 const PROXY_POLL_INTERVAL_MS: u64 = 500;
 const CONTAINER_PROXY_HOST: &str = "host.containers.internal";
+const BRIDGE_CONTAINER_PATH: &str = "/usr/local/bin/enclo-container-bridge";
+const BRIDGE_RETRY_DELAY: Duration = Duration::from_secs(2);
 
 pub struct Secrets {
     config: SecretsConfig,
     child: ManagedChild,
+    bridge_cancel: Arc<Notify>,
 }
 
 impl Secrets {
     pub fn new(config: SecretsConfig) -> Self {
-        Self { config, child: ManagedChild::new("enclo-secrets") }
+        Self {
+            config,
+            child: ManagedChild::new("enclo-secrets"),
+            bridge_cancel: Arc::new(Notify::new()),
+        }
     }
 }
 
@@ -138,14 +151,23 @@ impl Module for Secrets {
 
         let mut out = ModuleOutput::default();
 
-        // On macOS the Podman VM does not pass Unix socket mounts through;
-        // the secrets_bridge module handles container access via podman exec.
-        if ctx.platform == Platform::Linux {
-            out.volumes.push(VolumeMount::new(&socket_path, "/tmp/enclo-secrets.sock"));
-            let container_binary = support::resolve_container_binary_path("enclo-secrets")?;
-            out.volumes.push(
-                VolumeMount::new(&container_binary, "/usr/local/bin/enclo-secrets").with_options("ro"),
-            );
+        match ctx.platform {
+            Platform::Linux => {
+                // Mount the socket and in-container client binary directly.
+                out.volumes.push(VolumeMount::new(&socket_path, "/tmp/enclo-secrets.sock"));
+                let container_binary = support::resolve_container_binary_path("enclo-secrets")?;
+                out.volumes.push(
+                    VolumeMount::new(&container_binary, "/usr/local/bin/enclo-secrets").with_options("ro"),
+                );
+            }
+            Platform::MacOs => {
+                // The Podman VM does not pass Unix socket mounts through; mount the
+                // bridge binary instead and let post_start tunnel the socket via podman exec.
+                let bridge_binary = support::resolve_container_binary_path("enclo-container-bridge")?;
+                out.volumes.push(
+                    VolumeMount::new(&bridge_binary, BRIDGE_CONTAINER_PATH).with_options("ro"),
+                );
+            }
         }
 
         // Proxy output: CA cert, update-ca-trust, and HTTP_PROXY env vars.
@@ -202,6 +224,34 @@ impl Module for Secrets {
         Ok(out)
     }
 
+    async fn post_start(&self, ctx: &Context) -> anyhow::Result<()> {
+        if ctx.platform != Platform::MacOs {
+            return Ok(());
+        }
+
+        let host_socket = ctx.enclo_dir.join("secrets.sock");
+        let container_socket = self.config.bridge_socket_path.clone()
+            .unwrap_or_else(|| "/tmp/enclo-secrets.sock".into());
+
+        tokio::spawn(bridge_loop(
+            ctx.container_name.clone(),
+            host_socket,
+            PathBuf::from(BRIDGE_CONTAINER_PATH),
+            container_socket.clone(),
+            Arc::clone(&self.bridge_cancel),
+        ));
+
+        tracing::info!("waiting for enclo-container-bridge socket in container");
+        support::wait_for_container_socket(
+            &ctx.container_name,
+            &container_socket,
+            30,
+            Duration::from_millis(200),
+            "enclo-container-bridge socket",
+        )
+        .await
+    }
+
     fn can_reload(&self) -> bool { true }
 
     async fn module_status(&self) -> ModuleStatus {
@@ -213,6 +263,88 @@ impl Module for Secrets {
     }
 
     async fn teardown(&self, _ctx: &Context) -> anyhow::Result<()> {
+        self.bridge_cancel.notify_one();
         self.child.kill().await
     }
+}
+
+async fn bridge_loop(
+    container_name: String,
+    host_socket: PathBuf,
+    bridge_binary: PathBuf,
+    container_socket: String,
+    cancel: Arc<Notify>,
+) {
+    loop {
+        let result = tokio::select! {
+            _ = cancel.notified() => return,
+            result = run_bridge_once(
+                &container_name, &host_socket, &bridge_binary, &container_socket,
+            ) => result,
+        };
+
+        match result {
+            Ok(()) => tracing::info!("container secrets bridge disconnected"),
+            Err(e) => tracing::warn!("container secrets bridge error: {e}"),
+        }
+
+        tokio::select! {
+            _ = cancel.notified() => return,
+            _ = tokio::time::sleep(BRIDGE_RETRY_DELAY) => {}
+        }
+    }
+}
+
+async fn run_bridge_once(
+    container_name: &str,
+    host_socket: &Path,
+    bridge_binary: &Path,
+    container_socket: &str,
+) -> anyhow::Result<()> {
+    let stream = tokio::net::UnixStream::connect(host_socket)
+        .await
+        .map_err(|e| anyhow::anyhow!("connect to secrets socket: {e}"))?;
+    let (mut sock_read, mut sock_write) = stream.into_split();
+
+    let binary_str = bridge_binary.to_string_lossy();
+    let mut child = Command::new("podman")
+        .args([
+            "exec", "-i",
+            container_name,
+            binary_str.as_ref(),
+            "--socket", container_socket,
+        ])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::inherit())
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("spawn podman exec: {e}"))?;
+
+    let mut child_stdin = child.stdin.take().unwrap();
+    let mut child_stdout = child.stdout.take().unwrap();
+
+    let fwd_requests = tokio::spawn(async move {
+        tokio::io::copy(&mut child_stdout, &mut sock_write).await
+    });
+
+    let fwd_responses = tokio::spawn(async move {
+        tokio::io::copy(&mut sock_read, &mut child_stdin).await
+    });
+
+    tokio::select! {
+        status = child.wait() => {
+            let s = status.map_err(|e| anyhow::anyhow!("podman exec wait: {e}"))?;
+            if !s.success() {
+                anyhow::bail!("podman exec exited with {s}");
+            }
+        }
+        r = fwd_requests => {
+            r.map_err(|e| anyhow::anyhow!("request forwarder panicked: {e}"))??;
+        }
+        r = fwd_responses => {
+            r.map_err(|e| anyhow::anyhow!("response forwarder panicked: {e}"))??;
+        }
+    }
+
+    Ok(())
 }

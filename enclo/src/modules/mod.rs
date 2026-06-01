@@ -6,7 +6,6 @@ mod gpg_agent;
 mod nvidia;
 mod podman_socket;
 mod secrets;
-mod secrets_bridge;
 mod ssh_agent;
 mod support;
 mod xdg_open;
@@ -19,7 +18,6 @@ pub use gpg_agent::GpgAgent;
 pub use nvidia::Nvidia;
 pub use podman_socket::PodmanSocket;
 pub use secrets::Secrets;
-pub use secrets_bridge::SecretsBridge;
 pub use ssh_agent::SshAgent;
 pub use xdg_open::XdgOpen;
 
@@ -36,7 +34,6 @@ pub fn build_registry(config: &ModulesConfig) -> Vec<Arc<dyn Module>> {
         Arc::new(Nvidia::new(config.nvidia.clone())),
         Arc::new(ContainerClient::new(config.container_client.clone())),
         Arc::new(Secrets::new(config.secrets.clone())),
-        Arc::new(SecretsBridge::new(config.secrets_bridge.clone())),
         Arc::new(AwsCredentials::new(config.aws_credentials.clone())),
         Arc::new(XdgOpen::new(config.xdg_open.clone())),
     ]

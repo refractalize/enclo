@@ -57,8 +57,6 @@ pub struct ModulesConfig {
     #[serde(default)]
     pub secrets: SecretsConfig,
     #[serde(default)]
-    pub secrets_bridge: SecretsBridgeConfig,
-    #[serde(default)]
     pub aws_credentials: AwsCredentialsConfig,
     #[serde(default)]
     pub container_client: ContainerClientConfig,
@@ -185,15 +183,9 @@ pub struct SecretsConfig {
     /// Controls how the proxy URL is exposed inside the container (if proxy is enabled in config).
     #[serde(default)]
     pub mode: ProxyMode,
-}
-
-#[derive(Debug, Deserialize, Default, Clone)]
-pub struct SecretsBridgeConfig {
-    #[serde(default)]
-    pub enabled: bool,
-    /// Socket path inside the container that enclo-container-bridge will create.
-    /// Defaults to /run/enclo-secrets.sock.
-    pub socket_path: Option<String>,
+    /// Socket path inside the container for the secrets bridge (macOS only).
+    /// Defaults to /tmp/enclo-secrets.sock.
+    pub bridge_socket_path: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default, Clone)]
