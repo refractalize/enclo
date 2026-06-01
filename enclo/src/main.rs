@@ -126,7 +126,10 @@ struct LoadedTarget {
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env().add_directive("enclo=info".parse()?))
+        .with_env_filter(
+            EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| EnvFilter::new("enclo=info"))
+        )
         .init();
 
     let cli = Cli::parse();
@@ -226,6 +229,7 @@ async fn exec_into_target(loaded: &LoadedTarget, cmd: &[String], ensure_running:
         .map(|value| value.as_str())
         .unwrap_or(&loaded.config.container.exec_shell);
     let workdir = resolve_exec_workdir(&loaded.config.container.exec_workdir, &loaded.ctx);
+
     podman::exec(&loaded.ctx.container_name, shell, &exec_env, &workdir).await
 }
 

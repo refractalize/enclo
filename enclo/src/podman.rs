@@ -67,13 +67,27 @@ pub async fn exec(container: &str, shell: &str, env_file: &std::path::Path, work
 
 pub async fn stop(container: &str) -> Result<()> {
     debug!("podman stop {}", container);
-    let status = Command::new("podman")
+    let out = Command::new("podman")
         .args(["stop", container])
-        .status()
+        .output()
         .await
         .context("failed to spawn podman stop")?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        anyhow::bail!("podman stop exited with {}: {}", out.status, stderr.trim());
+    }
+    Ok(())
+}
+
+pub async fn remove(container: &str) -> Result<()> {
+    debug!("podman rm --force --ignore {}", container);
+    let status = Command::new("podman")
+        .args(["rm", "--force", "--ignore", container])
+        .status()
+        .await
+        .context("failed to spawn podman rm")?;
     if !status.success() {
-        anyhow::bail!("podman stop exited with {}", status);
+        anyhow::bail!("podman rm exited with {}", status);
     }
     Ok(())
 }

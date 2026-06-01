@@ -104,22 +104,35 @@ impl Orchestrator {
     ) -> Result<()> {
         let ordered = Self::sorted(&self.modules)?;
 
-        create_enclo_dir(ctx).await?;
+        reset_enclo_dir(ctx).await?;
+
         let setup = match self.setup_modules(&ordered, ctx, timestamps.as_ref()).await {
             Ok(setup) => setup,
             Err((module_name, error)) => {
                 let err = Err(error).context(format!("module {} setup failed", module_name));
                 notify_ready_error(ready, err.as_ref().unwrap_err().to_string());
+                cleanup(ctx).await;
                 return err;
             }
         };
 
-        write_exec_env(ctx, &setup.combined.exec_env_vars).await?;
+        if let Err(error) = write_exec_env(ctx, &setup.combined.exec_env_vars).await {
+            self.teardown_modules(ctx, &setup.active).await;
+            cleanup(ctx).await;
+            return Err(error);
+        }
 
         let cmd = build_podman_run_args(config, ctx, &setup.combined);
         info!("launching container: podman run {}", format_args_preview(&cmd));
 
-        let mut container_proc = podman::run(&cmd).await?;
+        let mut container_proc = match podman::run(&cmd).await {
+            Ok(child) => child,
+            Err(error) => {
+                self.teardown_modules(ctx, &setup.active).await;
+                cleanup(ctx).await;
+                return Err(error);
+            }
+        };
 
         if let Err(error) = self
             .wait_until_running(
@@ -132,6 +145,7 @@ impl Orchestrator {
             .await
         {
             notify_ready_error(ready, error.to_string());
+            cleanup(ctx).await;
             return Err(error);
         }
 
@@ -141,6 +155,7 @@ impl Orchestrator {
             }
         }
 
+        info!("container '{}' is ready", ctx.container_name);
         notify_ready_ok(ready);
 
         tokio::select! {
@@ -153,6 +168,7 @@ impl Orchestrator {
         }
 
         self.teardown_modules(ctx, &setup.active).await;
+        cleanup(ctx).await;
         Ok(())
     }
 
@@ -365,11 +381,26 @@ async fn remove_exec_env(ctx: &Context) {
     }
 }
 
-async fn create_enclo_dir(ctx: &Context) -> Result<()> {
+async fn reset_enclo_dir(ctx: &Context) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
+    if ctx.enclo_dir.exists() {
+        tokio::fs::remove_dir_all(&ctx.enclo_dir).await
+            .with_context(|| format!("failed to clear enclo dir {}", ctx.enclo_dir.display()))?;
+    }
     tokio::fs::create_dir_all(&ctx.enclo_dir).await?;
     std::fs::set_permissions(&ctx.enclo_dir, std::fs::Permissions::from_mode(0o700))?;
     Ok(())
+}
+
+async fn cleanup(ctx: &Context) {
+    if let Err(e) = podman::remove(&ctx.container_name).await {
+        warn!("cleanup: failed to remove container '{}': {:#}", ctx.container_name, e);
+    }
+    if ctx.enclo_dir.exists() {
+        if let Err(e) = tokio::fs::remove_dir_all(&ctx.enclo_dir).await {
+            warn!("cleanup: failed to remove enclo dir {}: {:#}", ctx.enclo_dir.display(), e);
+        }
+    }
 }
 
 fn format_args_preview(args: &[OsString]) -> String {

@@ -158,7 +158,9 @@ async fn build_runtime(
             Some(backend) => backend,
             None => {
                 let binary = format!("enclo-secret-store-{}", backend_config.name);
-                BackendClient::spawn(&binary, &backend_config.args, &backend_config.env, Arc::clone(&shutdown)).await?
+                tracing::info!(backend = backend_config.name.as_str(), binary = binary.as_str(), "starting backend");
+                BackendClient::spawn(&binary, &backend_config.args, &backend_config.env, Arc::clone(&shutdown)).await
+                    .map_err(|e| anyhow::anyhow!("failed to start backend '{}': {e}", backend_config.name))?
             }
         };
 

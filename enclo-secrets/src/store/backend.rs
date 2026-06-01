@@ -176,13 +176,15 @@ async fn spawn_process(
     args: &[String],
     env: &HashMap<String, String>,
 ) -> anyhow::Result<(Child, BufWriter<ChildStdin>, ChildStdout)> {
+    tracing::debug!(binary, "spawning backend process");
     let mut child = Command::new(binary)
         .args(args)
         .envs(env)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::inherit())
-        .spawn()?;
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("failed to spawn backend '{}': {e}", binary))?;
 
     let stdin = child.stdin.take().expect("stdin not captured");
     let stdout = child.stdout.take().expect("stdout not captured");
