@@ -169,6 +169,17 @@ impl Module for Secrets {
                 out.volumes.push(
                     VolumeMount::new(&bridge_binary, BRIDGE_CONTAINER_PATH).with_options("ro"),
                 );
+                // /run is root-owned inside the container; create /run/enclo as root
+                // and make it world-writable so the bridge (running as the container
+                // user) can create its socket there.
+                out.post_start_cmds.push(PostStartCmd {
+                    args: vec!["mkdir".into(), "-p".into(), "/run/enclo".into()],
+                    user: Some("root".into()),
+                });
+                out.post_start_cmds.push(PostStartCmd {
+                    args: vec!["chmod".into(), "1777".into(), "/run/enclo".into()],
+                    user: Some("root".into()),
+                });
             }
         }
 
