@@ -102,10 +102,12 @@ impl PlatformSupport {
                 module_name,
                 "dbus_proxy"
                     | "docker_socket"
+                    | "drm"
                     | "gpg_agent"
                     | "nvidia"
                     | "podman_socket"
                     | "ssh_agent"
+                    | "wayland"
                     | "xdg_open"
             ),
         }

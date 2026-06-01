@@ -62,6 +62,10 @@ pub struct ModulesConfig {
     pub container_client: ContainerClientConfig,
     #[serde(default)]
     pub xdg_open: XdgOpenConfig,
+    #[serde(default)]
+    pub drm: DrmConfig,
+    #[serde(default)]
+    pub wayland: WaylandConfig,
 }
 
 #[derive(Debug, Deserialize, Default, Clone, PartialEq, Eq)]
@@ -198,6 +202,20 @@ pub struct AwsCredentialsConfig {
 pub struct XdgOpenConfig {
     #[serde(default)]
     pub enabled: bool,
+}
+
+#[derive(Debug, Deserialize, Default, Clone)]
+pub struct DrmConfig {
+    #[serde(default)]
+    pub enabled: bool,
+}
+
+#[derive(Debug, Deserialize, Default, Clone)]
+pub struct WaylandConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Socket path inside the container. Defaults to /tmp/wayland-0.
+    pub socket_path: Option<String>,
 }
 
 impl Config {

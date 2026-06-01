@@ -2,23 +2,27 @@ mod aws_credentials;
 mod container_client;
 mod dbus_proxy;
 mod docker_socket;
+mod drm;
 mod gpg_agent;
 mod nvidia;
 mod podman_socket;
 mod secrets;
 mod ssh_agent;
 mod support;
+mod wayland;
 mod xdg_open;
 
 pub use aws_credentials::AwsCredentials;
 pub use container_client::ContainerClient;
 pub use dbus_proxy::DbusProxy;
 pub use docker_socket::DockerSocket;
+pub use drm::Drm;
 pub use gpg_agent::GpgAgent;
 pub use nvidia::Nvidia;
 pub use podman_socket::PodmanSocket;
 pub use secrets::Secrets;
 pub use ssh_agent::SshAgent;
+pub use wayland::Wayland;
 pub use xdg_open::XdgOpen;
 
 use std::sync::Arc;
@@ -36,5 +40,7 @@ pub fn build_registry(config: &ModulesConfig) -> Vec<Arc<dyn Module>> {
         Arc::new(Secrets::new(config.secrets.clone())),
         Arc::new(AwsCredentials::new(config.aws_credentials.clone())),
         Arc::new(XdgOpen::new(config.xdg_open.clone())),
+        Arc::new(Drm::new(config.drm.clone())),
+        Arc::new(Wayland::new(config.wayland.clone())),
     ]
 }
