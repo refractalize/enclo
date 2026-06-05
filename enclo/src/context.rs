@@ -6,6 +6,7 @@ use crate::platform::{Platform, PlatformSupport};
 pub struct Context {
     pub user: String,
     pub uid: u32,
+    pub gid: u32,
     pub home: PathBuf,
     pub runtime_dir: PathBuf,
     pub config_dir: PathBuf,
@@ -36,6 +37,7 @@ impl Context {
             .unwrap_or_else(|_| "unknown".into());
 
         let uid = unsafe { libc::getuid() };
+        let gid = unsafe { libc::getgid() };
 
         let home = std::env::var("HOME")
             .map(PathBuf::from)
@@ -51,6 +53,7 @@ impl Context {
         Ok(Self {
             user,
             uid,
+            gid,
             home,
             runtime_dir,
             config_dir,

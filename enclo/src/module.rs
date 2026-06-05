@@ -21,7 +21,7 @@ impl ModuleOutput {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PostStartCmd {
     pub args: Vec<String>,
     pub user: Option<String>,

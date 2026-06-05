@@ -300,7 +300,33 @@ fn build_podman_run_args(
     args.push(config.container.network.clone().into());
 
     args.push("--userns".into());
-    args.push(config.container.userns.clone().into());
+    // On macOS, Podman runs inside a VM whose user (core, UID 1000) is what
+    // keep-id would normally map. Append :uid=X,gid=Y to map the macOS host
+    // user's UID/GID into the container instead. Requires Podman 4.1+.
+    // Only applied when the config says keep-id; custom userns values are
+    // passed through unchanged.
+    #[cfg(target_os = "macos")]
+    let userns = if config.container.userns == "keep-id" {
+        format!("keep-id:uid={},gid={}", ctx.uid, ctx.gid)
+    } else {
+        config.container.userns.clone()
+    };
+    #[cfg(not(target_os = "macos"))]
+    let userns = config.container.userns.clone();
+    args.push(userns.into());
+
+    // On macOS, inject a /etc/passwd entry so the mapped UID resolves to the
+    // host username. --passwd-entry requires Podman 4.9+.
+    #[cfg(target_os = "macos")]
+    {
+        let entry = format!(
+            "{}:x:{}:{}:{}:{}:/bin/sh",
+            ctx.user, ctx.uid, ctx.gid, ctx.user,
+            ctx.home.display(),
+        );
+        args.push("--passwd-entry".into());
+        args.push(entry.into());
+    }
 
     if config.container.keep_groups {
         args.push("--group-add=keep-groups".into());
@@ -426,6 +452,7 @@ fn notify_ready_error(ready: Option<tokio::sync::oneshot::Sender<Result<()>>>, m
         let _ = tx.send(Err(anyhow::anyhow!("{}", message)));
     }
 }
+
 
 async fn run_post_start_cmds(container_name: &str, post_start_cmds: &[PostStartCmd]) {
     for post in post_start_cmds {
