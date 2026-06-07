@@ -220,7 +220,7 @@ impl Module for Secrets {
                 listen_addr.port(),
             );
 
-            match self.config.mode {
+            match self.config.proxy_mode {
                 ProxyMode::Implicit => {
                     for key in &["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"] {
                         out.env_vars.push(((*key).into(), proxy_url.clone()));

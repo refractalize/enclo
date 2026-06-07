@@ -20,7 +20,7 @@ use crate::{
     module::{Module, ModuleOutput, VolumeMount},
 };
 
-const DEFAULT_CONTAINER_SOCKET: &str = "/tmp/wayland-0";
+const WAYLAND_SOCKET_NAME: &str = "wayland-0";
 
 pub struct Wayland {
     config: WaylandConfig,
@@ -121,8 +121,18 @@ impl Module for Wayland {
 
     async fn setup(&self, ctx: &Context) -> anyhow::Result<ModuleOutput> {
         let socket_path = ctx.enclo_dir.join("wayland.sock");
-        let container_socket = self.config.socket_path.clone()
-            .unwrap_or_else(|| DEFAULT_CONTAINER_SOCKET.into());
+        let container_socket = match &self.config.socket_path {
+            Some(p) => p.clone(),
+            None => {
+                let xdg = std::env::var("XDG_RUNTIME_DIR").map_err(|_| {
+                    anyhow::anyhow!(
+                        "wayland module requires XDG_RUNTIME_DIR to be set; \
+                         set socket_path explicitly to override"
+                    )
+                })?;
+                format!("{xdg}/{WAYLAND_SOCKET_NAME}")
+            }
+        };
         let app_id = ctx.container_name.clone();
 
         let socket_path_clone = socket_path.clone();

@@ -141,22 +141,22 @@ pub struct SshAgentConfig {
     #[serde(default)]
     pub enabled: bool,
     /// Which SSH agent backend to expose into the container.
-    /// "gpg_agent" (default) uses the GPG agent's SSH socket.
-    /// "standalone" uses a regular ssh-agent socket.
+    /// "gpg" (default) uses the GPG agent's SSH socket.
+    /// "ssh" uses a regular ssh-agent socket.
     #[serde(default)]
     pub backend: SshBackend,
     /// Override the host socket path.
-    /// gpg_agent default: $XDG_RUNTIME_DIR/gnupg/S.gpg-agent.ssh
-    /// standalone default: $SSH_AUTH_SOCK environment variable
+    /// gpg default: $XDG_RUNTIME_DIR/gnupg/S.gpg-agent.ssh
+    /// ssh default: $SSH_AUTH_SOCK environment variable
     pub socket_path: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default, Clone)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "lowercase")]
 pub enum SshBackend {
     #[default]
-    GpgAgent,
-    Standalone,
+    Gpg,
+    Ssh,
 }
 
 
@@ -189,7 +189,7 @@ pub struct SecretsConfig {
     pub config: String,
     /// Controls how the proxy URL is exposed inside the container (if proxy is enabled in config).
     #[serde(default)]
-    pub mode: ProxyMode,
+    pub proxy_mode: ProxyMode,
     /// Socket path inside the container for the secrets bridge (macOS only).
     /// Defaults to /tmp/enclo-secrets.sock.
     pub bridge_socket_path: Option<String>,

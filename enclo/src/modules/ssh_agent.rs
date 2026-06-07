@@ -23,13 +23,13 @@ impl SshAgent {
             return Ok(PathBuf::from(path));
         }
         match self.config.backend {
-            SshBackend::GpgAgent => {
+            SshBackend::Gpg => {
                 Ok(ctx.support.default_gpg_agent_ssh_socket_path(&ctx.runtime_dir))
             }
-            SshBackend::Standalone => {
+            SshBackend::Ssh => {
                 let val = std::env::var("SSH_AUTH_SOCK").map_err(|_| {
                     anyhow::anyhow!(
-                        "ssh_agent backend is 'standalone' but SSH_AUTH_SOCK is not set \
+                        "ssh_agent backend is 'ssh' but SSH_AUTH_SOCK is not set \
                          and no socket_path is configured"
                     )
                 })?;

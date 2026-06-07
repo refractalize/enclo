@@ -135,10 +135,10 @@ async fn main() -> anyhow::Result<()> {
 }
 
 fn default_config_path() -> PathBuf {
-    dirs_next::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("enclo-secrets")
-        .join("config.toml")
+    std::env::var("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join(".config/enclo/secrets.toml")
 }
 
 fn cmd_generate_basic_auth(username: &str) -> anyhow::Result<()> {

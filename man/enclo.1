@@ -1,0 +1,218 @@
+.TH ENCLO 1 "2026-06-07" "enclo" "User Commands"
+.SH NAME
+enclo \- modular rootless container launcher
+.SH SYNOPSIS
+.B enclo
+[\fB\-c\fR \fIPATH\fR]
+.I COMMAND
+[\fIARGS\fR...]
+.SH DESCRIPTION
+.B enclo
+manages Podman containers using a declarative set of pluggable security modules.
+Each module contributes environment variables, volume mounts, and podman arguments
+before the container starts. Modules that require sidecar processes (secrets
+service, D-Bus proxy) are started alongside the container and torn down when it
+exits.
+.PP
+Container configs live at
+.IR ~/.config/enclo/containers/<NAME>.toml .
+Pass
+.B \-\-config
+to override the name-based lookup.
+.SH GLOBAL OPTIONS
+.TP
+.BR \-c ", " \-\-config " " \fIPATH\fR
+Explicit path to a container config file. Overrides the default lookup at
+.IR ~/.config/enclo/containers/<NAME>.toml .
+.SH COMMANDS
+.SS serve
+Start the enclo daemon.
+.PP
+.B enclo serve
+.PP
+On Linux, registers a D-Bus session service at
+.BR org.enclo.Manager .
+On macOS, listens on a Unix socket at
+.IR $XDG_RUNTIME_DIR/enclo/daemon.sock .
+A running daemon is replaced. Usually managed by the
+.BR enclo.service (5)
+systemd user unit.
+.SS run
+Start a container directly, in the foreground, without a daemon.
+.PP
+.B enclo run
+[\fINAME\fR]
+.PP
+Orchestrates all enabled modules, starts the container, and blocks until the
+container exits.
+.IR NAME
+defaults to
+.BR dev .
+.SS start
+Ask the daemon to start a container.
+.PP
+.B enclo start
+[\fINAME\fR]
+.PP
+.IR NAME
+defaults to
+.BR dev .
+.SS stop
+Ask the daemon to stop a container.
+.PP
+.B enclo stop
+[\fINAME\fR]
+[\fB\-\-force\fR]
+.TP
+.B \-\-force
+Stop even if there are active
+.BR podman-exec (1)
+sessions attached to the container.
+.PP
+Without
+.BR \-\-force ,
+the command fails if any exec sessions are open.
+.IR NAME
+defaults to
+.BR dev .
+.SS restart
+Ask the daemon to stop then start a container.
+.PP
+.B enclo restart
+[\fINAME\fR]
+[\fB\-\-force\fR]
+.TP
+.B \-\-force
+Restart even if there are active exec sessions.
+.PP
+.IR NAME
+defaults to
+.BR dev .
+.SS enter
+Enter a running container, starting it via the daemon first if necessary.
+.PP
+.B enclo enter
+[\fINAME\fR]
+[\fB\-\-\fR \fICMD\fR [\fIARGS\fR...]]
+.PP
+.IR NAME
+defaults to
+.BR dev .
+.I CMD
+defaults to the
+.B exec_shell
+from the container config (default:
+.BR bash ).
+.PP
+If the container is not running, the daemon is asked to start it before execing in.
+The working directory inside the container defaults to the current directory on the
+host, or
+.B exec_workdir
+from the config if set.
+.SS exec
+Exec into an already-running container without contacting the daemon.
+.PP
+.B enclo exec
+[\fINAME\fR]
+[\fB\-\-\fR \fICMD\fR [\fIARGS\fR...]]
+.PP
+Errors if the container is not running. Does not attempt to start it.
+.IR NAME
+defaults to
+.BR dev .
+.I CMD
+defaults to
+.B exec_shell
+from config.
+.SS reload
+Send SIGHUP to the modules of a running container that support hot-reload.
+.PP
+.B enclo reload
+[\fINAME\fR]
+.PP
+Currently reloads the secrets service (re-reads store config and proxy rules).
+The container is not restarted.
+.IR NAME
+defaults to
+.BR dev .
+.SS status
+Show container status.
+.PP
+.B enclo status
+[\fINAME\fR]
+.PP
+With no
+.IR NAME ,
+lists all known containers and their states. With a name, shows detailed
+status including module health.
+.SS setup-volume
+Create missing directories inside the home named volume with correct ownership.
+.PP
+.B enclo setup-volume
+[\fINAME\fR]
+[\fB\-\-dry\-run\fR]
+.TP
+.B \-\-dry\-run
+Print what would be created without making any changes.
+.PP
+.IR NAME
+defaults to
+.BR dev .
+.SH FILES
+.TP
+.I ~/.config/enclo/containers/<NAME>.toml
+Container config file (Linux).
+.TP
+.I ~/Library/Application Support/enclo/containers/<NAME>.toml
+Container config file (macOS).
+.TP
+.I $XDG_RUNTIME_DIR/enclo/<name>/
+Per-container runtime state: module sockets, exec-env file.
+.TP
+.I $XDG_RUNTIME_DIR/enclo/daemon.sock
+Daemon socket (macOS).
+.SH EXAMPLES
+.nf
+# Start the daemon (usually done by systemd)
+enclo serve
+
+# Start a container via the daemon
+enclo start dev
+
+# Open a shell in the container
+enclo enter dev
+
+# Run a one-off command without starting via daemon
+enclo exec dev -- git status
+
+# Reload secrets config without restarting
+enclo reload dev
+
+# Check container status
+enclo status
+enclo status dev
+
+# Stop the container
+enclo stop dev
+
+# Force-stop (ignores open exec sessions)
+enclo stop dev --force
+
+# Run a container directly (no daemon, blocks)
+enclo run dev
+
+# Use an explicit config file
+enclo --config ~/my-container.toml run
+.fi
+.SH SEE ALSO
+.BR enclo-container (1),
+.BR podman (1),
+.BR podman-run (1),
+.BR xdg-dbus-proxy (1),
+.BR gpg-agent (1)
+.PP
+Full documentation:
+.I docs/configuration.md
+and
+.I docs/commands.md
+in the enclo source tree.

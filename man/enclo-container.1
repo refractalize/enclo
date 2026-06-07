@@ -1,0 +1,185 @@
+.TH ENCLO-CONTAINER 1 "2026-06-07" "enclo" "User Commands"
+.SH NAME
+enclo \- in-container enclo client
+.SH SYNOPSIS
+.B enclo
+.I COMMAND
+[\fIARGS\fR...]
+.SH DESCRIPTION
+Inside a container managed by
+.BR enclo (1),
+the
+.B enclo
+binary is the
+.B enclo-container-client
+program, installed at
+.I /usr/local/bin/enclo
+by the
+.B container_client
+module (enabled by default).
+.PP
+It provides three commands: fetching secrets from the
+.B enclo-secrets
+Unix socket, running commands with fetched secrets injected as environment
+variables, and routing traffic through the enclo HTTPS proxy.
+.SH COMMANDS
+.SS get
+Fetch one or more secrets and print them to stdout.
+.PP
+.B enclo get
+[\fIOPTIONS\fR]
+[\fINAMES\fR...]
+.PP
+At least one
+.I NAME
+or
+.B \-\-group
+is required.
+.TP
+.BR \-s ", " \-\-socket " " \fIPATH\fR
+Path to the enclo-secrets Unix socket.
+Default:
+.IR /run/enclo/secrets.sock .
+.TP
+.BR \-c ", " \-\-config " " \fIPATH\fR
+Client config file (for group definitions).
+Default:
+.IR $XDG_CONFIG_HOME/enclo/client.toml .
+.TP
+.BR \-g ", " \-\-group " " \fIGROUP\fR
+Fetch all secrets in the named group, as defined in the client config.
+May be repeated or comma-separated.
+.TP
+.B \-\-env
+Print secrets as shell
+.B export
+statements instead of a JSON object. Suitable for use with
+.BR eval .
+.PP
+Secret names may include query-string parameters:
+.IR "AWS_CREDENTIALS?profile=prod" .
+Parameters are forwarded to the backend but stripped for access-control
+pattern matching.
+.SS run
+Fetch secrets and execute a command with them set as environment variables.
+.PP
+.B enclo run
+[\fIOPTIONS\fR]
+[\fINAMES\fR...]
+.B \-\-
+.I CMD
+[\fIARGS\fR...]
+.PP
+The
+.B \-\-
+separator is required. The command inherits the current environment
+with the fetched secrets added.
+.TP
+.BR \-s ", " \-\-socket " " \fIPATH\fR
+Path to the enclo-secrets Unix socket.
+Default:
+.IR /run/enclo/secrets.sock .
+.TP
+.BR \-c ", " \-\-config " " \fIPATH\fR
+Client config file.
+Default:
+.IR $XDG_CONFIG_HOME/enclo/client.toml .
+.TP
+.BR \-g ", " \-\-group " " \fIGROUP\fR
+Fetch all secrets in the named group.
+.SS proxy
+Run a command with
+.B HTTP_PROXY
+and
+.B HTTPS_PROXY
+set from
+.BR $ENCLO_PROXY ,
+or print those env vars.
+.PP
+.B enclo proxy
+[\fB\-\-env\fR]
+.PP
+.B enclo proxy
+.B \-\-
+.I CMD
+[\fIARGS\fR...]
+.PP
+.B $ENCLO_PROXY
+is set by the
+.B secrets
+module when
+.B mode = "explicit"
+(the default). It contains the proxy URL including ephemeral basic-auth
+credentials generated at container start.
+.TP
+.B \-\-env
+Print
+.B HTTP_PROXY
+and
+.B HTTPS_PROXY
+as shell
+.B export
+statements.
+Cannot be combined with a command.
+.SH FILES
+.TP
+.I /run/enclo/secrets.sock
+Default Unix socket path for the enclo-secrets service.
+.TP
+.I $XDG_CONFIG_HOME/enclo/client.toml
+Client config file. Contains named groups of secrets.
+.SH CLIENT CONFIG
+The client config defines named groups of secrets:
+.PP
+.nf
+[groups]
+dev_tools = ["GITHUB_TOKEN", "NPM_TOKEN"]
+aws_prod  = ["AWS_CREDENTIALS?profile=prod"]
+.fi
+.PP
+Groups are referenced with
+.BR \-g " / " \-\-group .
+Deduplication is applied: a name appearing in both a positional argument and a
+group is fetched only once.
+.SH EXAMPLES
+.nf
+# Fetch a single secret as JSON
+enclo get GITHUB_TOKEN
+
+# Fetch multiple secrets
+enclo get GITHUB_TOKEN NPM_TOKEN
+
+# Fetch as shell exports
+eval "$(enclo get --env GITHUB_TOKEN NPM_TOKEN)"
+
+# Fetch a group from client.toml
+enclo get --group dev_tools
+
+# Fetch multiple groups (comma-separated)
+enclo get --group dev_tools,aws_prod
+
+# Run a command with a secret injected
+enclo run GITHUB_TOKEN -- npm publish
+
+# Run with a group
+enclo run --group dev_tools -- make deploy
+
+# Use an AWS profile
+enclo run "AWS_CREDENTIALS?profile=prod" -- terraform apply
+
+# Run curl through the secrets proxy
+enclo proxy -- curl https://api.github.com/user
+
+# Set proxy env vars for the current shell
+eval "$(enclo proxy --env)"
+.fi
+.SH SEE ALSO
+.BR enclo (1),
+.BR pass (1),
+.BR gpg-agent (1)
+.PP
+Full documentation:
+.I docs/container-commands.md
+and
+.I docs/secrets-configuration.md
+in the enclo source tree.
