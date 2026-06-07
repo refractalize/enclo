@@ -2,11 +2,11 @@ use std::os::unix::process::CommandExt;
 use crate::util;
 
 pub fn run(env: bool, cmd: &[String]) -> anyhow::Result<()> {
-    let proxy_url = std::env::var("INSECTJAR_PROXY")
-        .map_err(|_| anyhow::anyhow!("INSECTJAR_PROXY is not set"))?;
+    let proxy_url = std::env::var("ENCLO_PROXY")
+        .map_err(|_| anyhow::anyhow!("ENCLO_PROXY is not set"))?;
 
     if proxy_url.is_empty() {
-        anyhow::bail!("INSECTJAR_PROXY is empty");
+        anyhow::bail!("ENCLO_PROXY is empty");
     }
 
     if env {

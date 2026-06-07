@@ -152,8 +152,8 @@ impl Module for EncloProxy {
                 }
             }
             ProxyMode::Explicit => {
-                out.env_vars.push(("INSECTJAR_PROXY".into(), proxy_url.clone()));
-                out.exec_env_vars.push(("INSECTJAR_PROXY".into(), proxy_url));
+                out.env_vars.push(("ENCLO_PROXY".into(), proxy_url.clone()));
+                out.exec_env_vars.push(("ENCLO_PROXY".into(), proxy_url));
             }
         }
 

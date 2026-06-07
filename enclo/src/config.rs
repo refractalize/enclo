@@ -31,6 +31,9 @@ pub struct ContainerConfig {
     /// Working directory for `exec`. Supports %h and %t specifiers.
     /// Defaults to the current working directory on the host.
     pub exec_workdir: Option<String>,
+    /// Timezone for the container. Accepts area-based names (e.g. Europe/London),
+    /// GMT offsets, or `local` to mirror the host timezone. Maps to `podman run --tz`.
+    pub tz: Option<String>,
 }
 
 fn default_network() -> String { "host".into() }

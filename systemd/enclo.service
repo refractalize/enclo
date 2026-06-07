@@ -1,5 +1,5 @@
 [Unit]
-Description=Insectjar container daemon
+Description=enclo container daemon
 
 [Service]
 Type=dbus

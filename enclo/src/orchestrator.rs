@@ -310,6 +310,10 @@ fn build_podman_run_args(
         args.push("--security-opt=label=disable".into());
     }
 
+    if let Some(tz) = &config.container.tz {
+        args.push(format!("--tz={tz}").into());
+    }
+
     for (k, v) in &output.env_vars {
         args.push("--env".into());
         args.push(format!("{}={}", k, v).into());

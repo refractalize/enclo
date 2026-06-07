@@ -62,7 +62,7 @@ enum Command {
         cmd: Vec<String>,
     },
 
-    /// Run a command with HTTP_PROXY/HTTPS_PROXY set from $INSECTJAR_PROXY
+    /// Run a command with HTTP_PROXY/HTTPS_PROXY set from $ENCLO_PROXY
     Proxy {
         /// Print proxy env vars as shell export statements for use with eval
         #[arg(long)]

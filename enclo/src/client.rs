@@ -9,6 +9,16 @@ mod dbus {
     use anyhow::{Context as _, Result};
     use zbus::proxy;
 
+    /// Strip the `org.freedesktop.DBus.Error.Failed: ` prefix that zbus adds
+    /// to error messages so users see the original message from the daemon.
+    pub fn clean_err(err: zbus::Error) -> anyhow::Error {
+        let s = err.to_string();
+        let msg = s
+            .strip_prefix("org.freedesktop.DBus.Error.Failed: ")
+            .unwrap_or(&s);
+        anyhow::anyhow!("{}", msg)
+    }
+
     #[proxy(
         interface = "org.enclo.Manager",
         default_service = "org.enclo",
@@ -106,6 +116,7 @@ pub async fn stop(name: &str, force: bool) -> Result<()> {
     {
         let proxy = dbus::connect().await?;
         proxy.stop(name, force).await
+            .map_err(dbus::clean_err)
             .with_context(|| format!("failed to stop container '{name}'"))
     }
 }
@@ -123,6 +134,7 @@ pub async fn restart(name: &str, config_path: &str, force: bool) -> Result<()> {
     {
         let proxy = dbus::connect().await?;
         proxy.restart(name, config_path, force).await
+            .map_err(dbus::clean_err)
             .with_context(|| format!("failed to restart container '{name}'"))
     }
 }
