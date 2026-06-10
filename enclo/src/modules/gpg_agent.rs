@@ -17,7 +17,7 @@ impl GpgAgent {
     }
 
     fn extra_socket_path(&self, ctx: &Context) -> PathBuf {
-        ctx.support.default_gpg_agent_extra_socket_path(&ctx.runtime_dir)
+        ctx.support.default_gpg_agent_extra_socket_path(&ctx.home, &ctx.runtime_dir)
     }
 }
 

@@ -87,12 +87,18 @@ impl PlatformSupport {
         }
     }
 
-    pub fn default_gpg_agent_ssh_socket_path(&self, runtime_dir: &Path) -> PathBuf {
-        runtime_dir.join("gnupg/S.gpg-agent.ssh")
+    pub fn default_gpg_agent_ssh_socket_path(&self, home: &Path, runtime_dir: &Path) -> PathBuf {
+        match self {
+            Self::MacOs => home.join(".gnupg/S.gpg-agent.ssh"),
+            Self::Linux => runtime_dir.join("gnupg/S.gpg-agent.ssh"),
+        }
     }
 
-    pub fn default_gpg_agent_extra_socket_path(&self, runtime_dir: &Path) -> PathBuf {
-        runtime_dir.join("gnupg/S.gpg-agent.extra")
+    pub fn default_gpg_agent_extra_socket_path(&self, home: &Path, runtime_dir: &Path) -> PathBuf {
+        match self {
+            Self::MacOs => home.join(".gnupg/S.gpg-agent.extra"),
+            Self::Linux => runtime_dir.join("gnupg/S.gpg-agent.extra"),
+        }
     }
 
     pub fn supports_module(&self, module_name: &str) -> bool {
