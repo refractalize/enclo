@@ -15,6 +15,7 @@ impl Default for AccessMode {
 }
 
 #[derive(Debug, Deserialize, Default, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct AccessConfig {
     #[serde(default)]
     pub mode: AccessMode,

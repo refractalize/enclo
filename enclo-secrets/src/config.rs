@@ -6,6 +6,7 @@ use crate::access::AccessConfig;
 use crate::store::config::StoreConfig;
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     pub store: StoreConfig,
 
@@ -17,6 +18,7 @@ pub struct Config {
 }
 
 #[derive(Debug, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct SecretsConfig {
     #[serde(default)]
     pub socket: SocketSecretsConfig,
@@ -25,6 +27,7 @@ pub struct SecretsConfig {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SocketSecretsConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -38,6 +41,7 @@ impl Default for SocketSecretsConfig {
 }
 
 #[derive(Debug, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct ProxyConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -55,25 +59,28 @@ impl ProxyConfig {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TlsConfig {
     pub ca_cert: PathBuf,
     pub ca_key: PathBuf,
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct ProxyAuthConfig {
     pub username: String,
     pub password_hash: String,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Rule {
     pub domain: String,
     pub auth: AuthConfig,
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(tag = "type", rename_all = "lowercase")]
+#[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
 pub enum AuthConfig {
     Bearer { secret: String },
     Basic { username: String, secret: String },

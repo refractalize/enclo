@@ -1,12 +1,14 @@
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     pub container: ContainerConfig,
     pub modules: ModulesConfig,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ContainerConfig {
     #[serde(default)]
     pub name: String,
@@ -48,6 +50,7 @@ fn default_userns() -> String { "keep-id".into() }
 fn default_exec_shell() -> String { "bash".into() }
 
 #[derive(Debug, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct ModulesConfig {
     #[serde(default)]
     pub gpg_agent: GpgAgentConfig,
@@ -88,6 +91,7 @@ pub enum ProxyMode {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct ContainerClientConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -102,12 +106,14 @@ impl Default for ContainerClientConfig {
 fn default_true() -> bool { true }
 
 #[derive(Debug, Deserialize, Default, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct NvidiaConfig {
     #[serde(default)]
     pub enabled: bool,
 }
 
 #[derive(Debug, Deserialize, Default, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct PodmanSocketConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -116,6 +122,7 @@ pub struct PodmanSocketConfig {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct DockerSocketConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -135,12 +142,14 @@ fn default_docker_socket_path() -> String {
 
 
 #[derive(Debug, Deserialize, Default, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct GpgAgentConfig {
     #[serde(default)]
     pub enabled: bool,
 }
 
 #[derive(Debug, Deserialize, Default, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct SshAgentConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -166,6 +175,7 @@ pub enum SshBackend {
 
 
 #[derive(Debug, Deserialize, Default, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct DbusProxyConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -185,6 +195,7 @@ fn default_dbus_interfaces() -> Vec<String> {
 }
 
 #[derive(Debug, Deserialize, Default, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct SecretsConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -200,24 +211,28 @@ pub struct SecretsConfig {
 }
 
 #[derive(Debug, Deserialize, Default, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct AwsCredentialsConfig {
     #[serde(default)]
     pub enabled: bool,
 }
 
 #[derive(Debug, Deserialize, Default, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct XdgOpenConfig {
     #[serde(default)]
     pub enabled: bool,
 }
 
 #[derive(Debug, Deserialize, Default, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct DrmConfig {
     #[serde(default)]
     pub enabled: bool,
 }
 
 #[derive(Debug, Deserialize, Default, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct WaylandConfig {
     #[serde(default)]
     pub enabled: bool,

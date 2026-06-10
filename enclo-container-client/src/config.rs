@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct ClientConfig {
     #[serde(default)]
     pub groups: HashMap<String, Vec<String>>,

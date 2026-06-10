@@ -3,6 +3,7 @@ use std::time::Duration;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct StoreConfig {
     pub cache: Option<CacheConfig>,
     pub confirm: Option<ConfirmConfig>,
@@ -13,6 +14,7 @@ pub struct StoreConfig {
 }
 
 #[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct CacheConfig {
     #[serde(with = "humantime_serde")]
     pub idle_ttl: Duration,
@@ -23,6 +25,7 @@ pub struct CacheConfig {
 }
 
 #[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct ConfirmConfig {
     pub enabled: bool,
     #[serde(default = "default_debounce_ms")]
@@ -34,12 +37,14 @@ fn default_debounce_ms() -> u64 {
 }
 
 #[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct Route {
     pub patterns: Vec<String>,
     pub backend: String,
 }
 
 #[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct BackendConfig {
     pub name: String,
     #[serde(default)]
