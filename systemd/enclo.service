@@ -1,5 +1,7 @@
 [Unit]
 Description=enclo container daemon
+After=graphical-session.target
+PartOf=graphical-session.target
 
 [Service]
 Type=dbus
@@ -9,4 +11,4 @@ ExecStart=%h/.local/bin/enclo serve
 Restart=on-failure
 
 [Install]
-WantedBy=default.target
+WantedBy=graphical-session.target
