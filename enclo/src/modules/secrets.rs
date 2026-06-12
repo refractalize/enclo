@@ -1,5 +1,5 @@
 use std::{
-    net::SocketAddr,
+    net::{IpAddr, Ipv4Addr, SocketAddr},
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
@@ -27,15 +27,17 @@ const BRIDGE_RETRY_DELAY: Duration = Duration::from_secs(2);
 
 pub struct Secrets {
     config: SecretsConfig,
+    network: String,
     child: ManagedChild,
     bridge_cancel: Arc<Notify>,
     bridge_exec_id: Mutex<Option<String>>,
 }
 
 impl Secrets {
-    pub fn new(config: SecretsConfig) -> Self {
+    pub fn new(config: SecretsConfig, network: String) -> Self {
         Self {
             config,
+            network,
             child: ManagedChild::new("enclo-secrets"),
             bridge_cancel: Arc::new(Notify::new()),
             bridge_exec_id: Mutex::new(None),
@@ -101,27 +103,33 @@ impl Module for Secrets {
     fn enabled(&self) -> bool { self.config.enabled }
 
     async fn setup(&self, ctx: &Context) -> anyhow::Result<ModuleOutput> {
-        if self.config.config.is_empty() {
-            anyhow::bail!(
-                "modules.secrets.config must be set to the path of your enclo-secrets config file"
-            );
-        }
+        let config_str = self.config.config.clone().unwrap_or_else(|| {
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/root".into());
+            format!("{home}/.config/enclo/secrets.toml")
+        });
 
-        let config_path = std::path::Path::new(&self.config.config);
+        let config_path = std::path::Path::new(&config_str);
         let config_dir = config_path.parent().unwrap_or(std::path::Path::new("."));
 
         let raw = tokio::fs::read_to_string(config_path).await
-            .map_err(|e| anyhow::anyhow!("failed to read {}: {e}", self.config.config))?;
+            .map_err(|e| anyhow::anyhow!("failed to read {}: {e}", config_str))?;
         let preview: ConfigPreview = toml::from_str(&raw)
-            .map_err(|e| anyhow::anyhow!("failed to parse {}: {e}", self.config.config))?;
+            .map_err(|e| anyhow::anyhow!("failed to parse {}: {e}", config_str))?;
 
         let socket_path = ctx.enclo_dir.join("secrets.sock");
         let binary_path = support::resolve_binary_path("enclo-secrets")?;
 
+        let (bind_ip, container_proxy_host) = if self.network == "host" {
+            (IpAddr::V4(Ipv4Addr::LOCALHOST), "127.0.0.1".to_string())
+        } else {
+            let gw = crate::podman::network_gateway(&self.network).await?;
+            (gw, CONTAINER_PROXY_HOST.to_string())
+        };
+
         let mut args = vec![
             "serve".to_string(),
             "--socket".to_string(), socket_path.to_string_lossy().into_owned(),
-            "--config".to_string(), self.config.config.clone(),
+            "--config".to_string(), config_str.clone(),
         ];
 
         // Proxy-specific setup: generate ephemeral credentials and pass them in.
@@ -185,10 +193,13 @@ impl Module for Secrets {
 
         // Proxy output: CA cert, update-ca-trust, and HTTP_PROXY env vars.
         if let Some(password) = proxy_password {
-            let listen_addr = preview.proxy.listen
+            let config_listen = preview.proxy.listen
                 .ok_or_else(|| anyhow::anyhow!("proxy.listen is required when proxy.enabled = true"))?;
             let tls = preview.proxy.tls
                 .ok_or_else(|| anyhow::anyhow!("proxy.tls is required when proxy.enabled = true"))?;
+
+            let listen_addr = SocketAddr::new(bind_ip, config_listen.port());
+            args.extend(["--listen".into(), listen_addr.to_string()]);
 
             tracing::info!("waiting for enclo-secrets proxy on {listen_addr}");
             support::wait_for_tcp(
@@ -216,7 +227,7 @@ impl Module for Secrets {
 
             let proxy_url = format!(
                 "http://enclo:{password}@{}:{}",
-                CONTAINER_PROXY_HOST,
+                container_proxy_host,
                 listen_addr.port(),
             );
 

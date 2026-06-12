@@ -39,19 +39,19 @@ enum Command {
 
     /// Start a container directly (blocking, no daemon required)
     Run {
-        /// Container name; resolves ~/.config/enclo/containers/<NAME>.toml (default: dev)
+        /// Container name; resolves ~/.config/enclo/containers/<NAME>.toml (default: default)
         name: Option<String>,
     },
 
     /// Ask the daemon to start a container
     Start {
-        /// Container name (default: dev)
+        /// Container name (default: default)
         name: Option<String>,
     },
 
     /// Ask the daemon to stop a container
     Stop {
-        /// Container name (default: dev)
+        /// Container name (default: default)
         name: Option<String>,
         /// Stop even if there are active exec sessions
         #[arg(long)]
@@ -60,7 +60,7 @@ enum Command {
 
     /// Ask the daemon to restart a container (stop then start)
     Restart {
-        /// Container name (default: dev)
+        /// Container name (default: default)
         name: Option<String>,
         /// Restart even if there are active exec sessions
         #[arg(long)]
@@ -69,7 +69,7 @@ enum Command {
 
     /// Enter a running container (starts it via the daemon if necessary)
     Enter {
-        /// Container name (default: dev)
+        /// Container name (default: default)
         name: Option<String>,
         /// Command to run inside the container (default: exec_shell from config)
         #[arg(last = true)]
@@ -78,7 +78,7 @@ enum Command {
 
     /// Exec into an already-running container without contacting the daemon
     Exec {
-        /// Container name (default: dev)
+        /// Container name (default: default)
         name: Option<String>,
         /// Command to run inside the container (default: exec_shell from config)
         #[arg(last = true)]
@@ -87,7 +87,7 @@ enum Command {
 
     /// Ask the daemon to reload config for a running container's modules (sends SIGHUP to supporting services)
     Reload {
-        /// Container name (default: dev)
+        /// Container name (default: default)
         name: Option<String>,
     },
 
@@ -99,7 +99,7 @@ enum Command {
 
     /// Create missing directories in the home named volume with correct ownership
     SetupVolume {
-        /// Container name; resolves ~/.config/enclo/containers/<NAME>.toml (default: dev)
+        /// Container name; resolves ~/.config/enclo/containers/<NAME>.toml (default: default)
         name: Option<String>,
         /// Print what would be created without making any changes
         #[arg(long)]
@@ -111,7 +111,7 @@ fn resolve_config(explicit: Option<PathBuf>, name: Option<&str>) -> PathBuf {
     if let Some(p) = explicit {
         return p;
     }
-    let name = name.unwrap_or("dev");
+    let name = name.unwrap_or("default");
     config_dir().join("containers").join(format!("{name}.toml"))
 }
 
@@ -145,7 +145,7 @@ async fn main() -> Result<()> {
 
         Command::Run { ref name } => {
             let loaded = load_target(cli.config.clone(), name.as_deref())?;
-            Orchestrator::new(build_registry(&loaded.config.modules))
+            Orchestrator::new(build_registry(&loaded.config))
                 .start(&loaded.config, &loaded.ctx, None, None)
                 .await
         }
@@ -186,7 +186,7 @@ async fn main() -> Result<()> {
 
         Command::SetupVolume { ref name, dry_run } => {
             let loaded = load_target(cli.config.clone(), name.as_deref())?;
-            Orchestrator::new(build_registry(&loaded.config.modules))
+            Orchestrator::new(build_registry(&loaded.config))
                 .setup_volume(&loaded.config, &loaded.ctx, dry_run)
                 .await
         }
@@ -194,7 +194,7 @@ async fn main() -> Result<()> {
 }
 
 fn resolve_name(name: Option<String>) -> String {
-    name.unwrap_or_else(|| "dev".into())
+    name.unwrap_or_else(|| "default".into())
 }
 
 fn load_target(explicit_config: Option<PathBuf>, name: Option<&str>) -> Result<LoadedTarget> {
@@ -205,7 +205,7 @@ fn load_target(explicit_config: Option<PathBuf>, name: Option<&str>) -> Result<L
         config,
         ctx,
         path,
-        name: name.unwrap_or("dev").to_string(),
+        name: name.unwrap_or("default").to_string(),
     })
 }
 

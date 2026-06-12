@@ -58,6 +58,10 @@ enum Command {
         /// Proxy auth password hash override (must be paired with --username)
         #[arg(long, requires = "username")]
         password_hash: Option<String>,
+
+        /// Override the proxy listen address from config (e.g. 127.0.0.1:8080)
+        #[arg(long)]
+        listen: Option<std::net::SocketAddr>,
     },
 
     /// Generate an Argon2 password hash for proxy authentication.
@@ -121,7 +125,7 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.command {
         Command::GenerateBasicAuth { username } => cmd_generate_basic_auth(&username),
-        Command::Serve { config, socket, username, password_hash } => {
+        Command::Serve { config, socket, username, password_hash, listen } => {
             let cli_auth = match (username, password_hash) {
                 (Some(username), Some(password_hash)) => {
                     Some(config::ProxyAuthConfig { username, password_hash })
@@ -129,7 +133,7 @@ async fn main() -> anyhow::Result<()> {
                 _ => None,
             };
             let config_path = config.unwrap_or_else(default_config_path);
-            run(config_path, socket, cli_auth).await
+            run(config_path, socket, cli_auth, listen).await
         }
     }
 }
@@ -171,13 +175,17 @@ async fn run(
     config_path: PathBuf,
     socket_override: Option<PathBuf>,
     cli_auth: Option<config::ProxyAuthConfig>,
+    listen_override: Option<std::net::SocketAddr>,
 ) -> anyhow::Result<()> {
     rustls::crypto::ring::default_provider()
         .install_default()
         .expect("failed to install rustls crypto provider");
 
-    let config = config::Config::from_file(&config_path)
+    let mut config = config::Config::from_file(&config_path)
         .map_err(|e| anyhow::anyhow!("failed to load config {}: {e}", config_path.display()))?;
+    if let Some(addr) = listen_override {
+        config.proxy.listen = Some(addr);
+    }
 
     let shutdown = Arc::new(Notify::new());
     let store = Arc::new(

@@ -8,6 +8,7 @@ pub struct Config {
 
 #[derive(Debug, Deserialize)]
 pub struct ContainerConfig {
+    #[serde(default)]
     pub name: String,
     pub image: String,
     #[serde(default = "default_network")]
@@ -185,8 +186,8 @@ pub struct SecretsConfig {
     #[serde(default)]
     pub enabled: bool,
     /// Path to the unified enclo-secrets config file.
-    #[serde(default)]
-    pub config: String,
+    /// Defaults to ~/.config/enclo/secrets.toml.
+    pub config: Option<String>,
     /// Controls how the proxy URL is exposed inside the container (if proxy is enabled in config).
     #[serde(default)]
     pub proxy_mode: ProxyMode,
@@ -227,6 +228,13 @@ impl Config {
             .map_err(|e| anyhow::anyhow!("failed to read config {}: {}", path.display(), e))?;
         let mut config: Config = toml::from_str(&content)
             .map_err(|e| anyhow::anyhow!("failed to parse config {}: {}", path.display(), e))?;
+        if config.container.name.is_empty() {
+            let stem = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("default");
+            config.container.name = format!("enclo-{stem}");
+        }
         let base = path.parent().unwrap_or(std::path::Path::new("."));
         config.resolve_paths(base);
         Ok(config)
@@ -236,9 +244,8 @@ impl Config {
         for vol in &mut self.container.volumes {
             *vol = resolve_volume_host(base, vol);
         }
-        let c = &self.modules.secrets.config;
-        if !c.is_empty() {
-            self.modules.secrets.config = resolve_str(base, c);
+        if let Some(c) = &self.modules.secrets.config {
+            self.modules.secrets.config = Some(resolve_str(base, c));
         }
     }
 }

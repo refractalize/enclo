@@ -26,21 +26,22 @@ pub use wayland::Wayland;
 pub use xdg_open::XdgOpen;
 
 use std::sync::Arc;
-use crate::{config::ModulesConfig, module::Module};
+use crate::{config::Config, module::Module};
 
-pub fn build_registry(config: &ModulesConfig) -> Vec<Arc<dyn Module>> {
+pub fn build_registry(config: &Config) -> Vec<Arc<dyn Module>> {
+    let m = &config.modules;
     vec![
-        Arc::new(PodmanSocket::new(config.podman_socket.clone())),
-        Arc::new(DockerSocket::new(config.docker_socket.clone())),
-        Arc::new(DbusProxy::new(config.dbus_proxy.clone())),
-        Arc::new(GpgAgent::new(config.gpg_agent.clone())),
-        Arc::new(SshAgent::new(config.ssh_agent.clone())),
-        Arc::new(Nvidia::new(config.nvidia.clone())),
-        Arc::new(ContainerClient::new(config.container_client.clone())),
-        Arc::new(Secrets::new(config.secrets.clone())),
-        Arc::new(AwsCredentials::new(config.aws_credentials.clone())),
-        Arc::new(XdgOpen::new(config.xdg_open.clone())),
-        Arc::new(Drm::new(config.drm.clone())),
-        Arc::new(Wayland::new(config.wayland.clone())),
+        Arc::new(PodmanSocket::new(m.podman_socket.clone())),
+        Arc::new(DockerSocket::new(m.docker_socket.clone())),
+        Arc::new(DbusProxy::new(m.dbus_proxy.clone())),
+        Arc::new(GpgAgent::new(m.gpg_agent.clone())),
+        Arc::new(SshAgent::new(m.ssh_agent.clone())),
+        Arc::new(Nvidia::new(m.nvidia.clone())),
+        Arc::new(ContainerClient::new(m.container_client.clone())),
+        Arc::new(Secrets::new(m.secrets.clone(), config.container.network.clone())),
+        Arc::new(AwsCredentials::new(m.aws_credentials.clone())),
+        Arc::new(XdgOpen::new(m.xdg_open.clone())),
+        Arc::new(Drm::new(m.drm.clone())),
+        Arc::new(Wayland::new(m.wayland.clone())),
     ]
 }

@@ -1,4 +1,4 @@
-use std::ffi::OsString;
+use std::{ffi::OsString, net::IpAddr};
 use anyhow::{Context, Result};
 use tokio::process::Command;
 use tracing::debug;
@@ -116,6 +116,27 @@ pub async fn exec_ids(container: &str) -> Result<Vec<String>> {
 pub async fn user_exec_sessions(container: &str, managed: &[String]) -> Result<Vec<String>> {
     let all = exec_ids(container).await?;
     Ok(all.into_iter().filter(|id| !managed.contains(id)).collect())
+}
+
+pub async fn network_gateway(network: &str) -> Result<IpAddr> {
+    let out = Command::new("podman")
+        .args(["network", "inspect", network, "--format", "{{range .Subnets}}{{.Gateway}}{{end}}"])
+        .output()
+        .await
+        .context("failed to spawn podman network inspect")?;
+
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        anyhow::bail!("podman network inspect failed: {}", stderr.trim());
+    }
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    stdout
+        .split_whitespace()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("no gateway found for network '{network}'"))?
+        .parse::<IpAddr>()
+        .map_err(|e| anyhow::anyhow!("failed to parse gateway IP for network '{network}': {e}"))
 }
 
 pub async fn container_state(container: &str) -> Result<String> {

@@ -117,13 +117,23 @@ impl Manager {
         }
     }
 
+    /// Returns the podman container name for a given config stem, using the
+    /// stored context if the container is tracked, otherwise loading the config.
+    async fn resolve_container_name(&self, name: &str) -> Result<String> {
+        if let Some(entry) = self.inner.lock().await.containers.get(name) {
+            return Ok(entry.ctx.container_name.clone());
+        }
+        let (config, _) = self.load(name, None).await?;
+        Ok(config.container.name)
+    }
+
     /// Stop all running containers and wait for their tasks to finish teardown.
     async fn stop_all(&self) {
-        let names: Vec<String> = self.inner.lock().await.containers.keys().cloned().collect();
-        for name in &names {
-            if let Ok(ctx) = Context::new(name.clone()) {
-                let _ = crate::podman::stop(&ctx.container_name).await;
-            }
+        let container_names: Vec<String> = self.inner.lock().await.containers.values()
+            .map(|e| e.ctx.container_name.clone())
+            .collect();
+        for container_name in &container_names {
+            let _ = crate::podman::stop(container_name).await;
         }
         // Wait for tasks to remove themselves from the map (they do so after teardown).
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
@@ -143,7 +153,7 @@ impl Manager {
     /// Running via the oneshot then continues until the container exits.
     async fn spawn_start(&self, name: String, config_path: Option<&str>) -> Result<watch::Receiver<ContainerStatus>> {
         let (config, ctx) = self.load(&name, config_path).await?;
-        let modules = modules::build_registry(&config.modules);
+        let modules = modules::build_registry(&config);
         let (reloadable, all_enabled) = classify_modules(&modules);
         let orch = Orchestrator::new(modules);
         let ctx_for_entry = ctx.clone();
@@ -271,10 +281,10 @@ impl Manager {
             managed.extend(module.module_status().await.managed_exec_ids);
         }
 
-        let ctx = Context::new(name.to_string())
+        let container_name = self.resolve_container_name(name).await
             .map_err(|e| zbus::fdo::Error::Failed(format!("{:#}", e)))?;
 
-        let user_sessions = crate::podman::user_exec_sessions(&ctx.container_name, &managed)
+        let user_sessions = crate::podman::user_exec_sessions(&container_name, &managed)
             .await
             .map_err(|e| zbus::fdo::Error::Failed(format!("{:#}", e)))?;
 
@@ -294,12 +304,12 @@ impl Manager {
             self.check_user_sessions(&name).await?;
         }
 
-        let ctx = Context::new(name.clone())
+        let container_name = self.resolve_container_name(&name).await
             .map_err(|e| zbus::fdo::Error::Failed(format!("{:#}", e)))?;
 
         self.send_status(&name, ContainerStatus::Stopping).await;
 
-        crate::podman::stop(&ctx.container_name).await
+        crate::podman::stop(&container_name).await
             .map_err(|e| zbus::fdo::Error::Failed(format!("{:#}", e)))
     }
 
@@ -324,10 +334,10 @@ impl Manager {
             self.check_user_sessions(&name).await?;
         }
 
-        let ctx = Context::new(name.clone())
+        let container_name = self.resolve_container_name(&name).await
             .map_err(|e| zbus::fdo::Error::Failed(format!("{:#}", e)))?;
         self.send_status(&name, ContainerStatus::Stopping).await;
-        let _ = crate::podman::stop(&ctx.container_name).await;
+        let _ = crate::podman::stop(&container_name).await;
         self.wait_until_removed(&name, std::time::Duration::from_secs(30)).await?;
 
         self.start(name, config_path).await
