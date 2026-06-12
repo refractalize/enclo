@@ -46,19 +46,30 @@ pub async fn exec_as(container: &str, user: &str, args: &[String]) -> Result<()>
     Ok(())
 }
 
-pub async fn exec(container: &str, shell: &str, env_file: &std::path::Path, workdir: &str) -> Result<()> {
+pub async fn exec(
+    container: &str,
+    shell: &str,
+    shell_args: &[String],
+    env_file: &std::path::Path,
+    workdir: &str,
+    user: Option<&str>,
+    extra_env: &[String],
+) -> Result<()> {
     debug!("podman exec into {}", container);
-    let status = Command::new("podman")
-        .arg("exec")
+    let mut cmd = Command::new("podman");
+    cmd.arg("exec")
         .arg("--interactive")
         .arg("--tty")
         .arg(format!("--env-file={}", env_file.display()))
-        .arg(format!("--workdir={}", workdir))
-        .arg(container)
-        .arg(shell)
-        .status()
-        .await
-        .context("failed to spawn podman exec")?;
+        .arg(format!("--workdir={}", workdir));
+    if let Some(u) = user {
+        cmd.arg(format!("--user={u}"));
+    }
+    for e in extra_env {
+        cmd.arg(format!("--env={e}"));
+    }
+    cmd.arg(container).arg(shell).args(shell_args);
+    let status = cmd.status().await.context("failed to spawn podman exec")?;
     if !status.success() {
         anyhow::bail!("podman exec exited with {}", status);
     }

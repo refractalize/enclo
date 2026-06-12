@@ -71,6 +71,15 @@ enum Command {
     Enter {
         /// Container name (default: default)
         name: Option<String>,
+        /// Working directory inside the container (overrides config and host CWD)
+        #[arg(short = 'w', long)]
+        workdir: Option<String>,
+        /// User to run as inside the container (e.g. root or 1000)
+        #[arg(short = 'u', long)]
+        user: Option<String>,
+        /// Set additional environment variables (KEY=VALUE); may be repeated
+        #[arg(short = 'e', long = "env", value_name = "KEY=VALUE")]
+        env: Vec<String>,
         /// Command to run inside the container (default: exec_shell from config)
         #[arg(last = true)]
         cmd: Vec<String>,
@@ -80,6 +89,15 @@ enum Command {
     Exec {
         /// Container name (default: default)
         name: Option<String>,
+        /// Working directory inside the container (overrides config and host CWD)
+        #[arg(short = 'w', long)]
+        workdir: Option<String>,
+        /// User to run as inside the container (e.g. root or 1000)
+        #[arg(short = 'u', long)]
+        user: Option<String>,
+        /// Set additional environment variables (KEY=VALUE); may be repeated
+        #[arg(short = 'e', long = "env", value_name = "KEY=VALUE")]
+        env: Vec<String>,
         /// Command to run inside the container (default: exec_shell from config)
         #[arg(last = true)]
         cmd: Vec<String>,
@@ -174,14 +192,14 @@ async fn main() -> Result<()> {
 
         Command::Status { name } => client::status(name.as_deref()).await,
 
-        Command::Enter { ref name, ref cmd } => {
+        Command::Enter { ref name, ref workdir, ref user, ref env, ref cmd } => {
             let loaded = load_target(cli.config.clone(), name.as_deref())?;
-            exec_into_target(&loaded, cmd, true).await
+            exec_into_target(&loaded, cmd, workdir.as_deref(), user.as_deref(), env, true).await
         }
 
-        Command::Exec { ref name, ref cmd } => {
+        Command::Exec { ref name, ref workdir, ref user, ref env, ref cmd } => {
             let loaded = load_target(cli.config.clone(), name.as_deref())?;
-            exec_into_target(&loaded, cmd, false).await
+            exec_into_target(&loaded, cmd, workdir.as_deref(), user.as_deref(), env, false).await
         }
 
         Command::SetupVolume { ref name, dry_run } => {
@@ -209,7 +227,14 @@ fn load_target(explicit_config: Option<PathBuf>, name: Option<&str>) -> Result<L
     })
 }
 
-async fn exec_into_target(loaded: &LoadedTarget, cmd: &[String], ensure_running: bool) -> Result<()> {
+async fn exec_into_target(
+    loaded: &LoadedTarget,
+    cmd: &[String],
+    workdir: Option<&str>,
+    user: Option<&str>,
+    env: &[String],
+    ensure_running: bool,
+) -> Result<()> {
     if ensure_running {
         client::ensure_running(&loaded.name, &loaded.path.to_string_lossy()).await?;
     }
@@ -230,13 +255,15 @@ async fn exec_into_target(loaded: &LoadedTarget, cmd: &[String], ensure_running:
         anyhow::bail!(error);
     }
 
-    let shell = cmd
-        .first()
-        .map(|value| value.as_str())
-        .unwrap_or(&loaded.config.container.exec_shell);
-    let workdir = resolve_exec_workdir(&loaded.config.container.exec_workdir, &loaded.ctx);
+    let (shell, extra_cmd) = match cmd.split_first() {
+        Some((first, rest)) => (first.as_str(), rest),
+        None => (loaded.config.container.exec_shell.as_str(), [].as_slice()),
+    };
+    let workdir = workdir
+        .map(|w| w.to_string())
+        .unwrap_or_else(|| resolve_exec_workdir(&loaded.config.container.exec_workdir, &loaded.ctx));
 
-    podman::exec(&loaded.ctx.container_name, shell, &exec_env, &workdir).await
+    podman::exec(&loaded.ctx.container_name, shell, extra_cmd, &exec_env, &workdir, user, env).await
 }
 
 fn resolve_exec_workdir(config_workdir: &Option<String>, ctx: &Context) -> String {
