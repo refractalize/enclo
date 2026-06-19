@@ -35,6 +35,9 @@ pub struct ContainerConfig {
     /// Timezone for the container. Accepts area-based names (e.g. Europe/London),
     /// GMT offsets, or `local` to mirror the host timezone. Maps to `podman run --tz`.
     pub tz: Option<String>,
+    /// Maximum number of PIDs allowed in the container. Maps to
+    /// `podman run --pids-limit`. Use -1 for unlimited.
+    pub pids_limit: Option<i64>,
 }
 
 fn default_network() -> String { "host".into() }

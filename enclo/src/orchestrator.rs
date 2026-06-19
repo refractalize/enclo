@@ -340,6 +340,10 @@ fn build_podman_run_args(
         args.push(format!("--tz={tz}").into());
     }
 
+    if let Some(pids_limit) = config.container.pids_limit {
+        args.push(format!("--pids-limit={pids_limit}").into());
+    }
+
     for (k, v) in &output.env_vars {
         args.push("--env".into());
         args.push(format!("{}={}", k, v).into());
