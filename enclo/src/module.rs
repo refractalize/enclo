@@ -27,6 +27,11 @@ pub struct PostStartCmd {
     pub user: Option<String>,
 }
 
+#[derive(Debug, Default)]
+pub struct PreExecOutput {
+    pub env_vars: Vec<(String, String)>,
+}
+
 #[derive(Debug, Clone)]
 pub struct VolumeMount {
     pub host_path: OsString,
@@ -92,6 +97,11 @@ pub trait Module: Send + Sync {
     async fn post_start(&self, ctx: &Context) -> anyhow::Result<()> {
         let _ = ctx;
         Ok(())
+    }
+
+    async fn pre_exec(&self, ctx: &Context) -> anyhow::Result<PreExecOutput> {
+        let _ = ctx;
+        Ok(PreExecOutput::default())
     }
 
     async fn reload(&self, ctx: &Context) -> anyhow::Result<()> {

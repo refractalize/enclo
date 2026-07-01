@@ -263,7 +263,22 @@ async fn exec_into_target(
         .map(|w| w.to_string())
         .unwrap_or_else(|| resolve_exec_workdir(&loaded.config.container.exec_workdir, &loaded.ctx));
 
-    podman::exec(&loaded.ctx.container_name, shell, extra_cmd, &exec_env, &workdir, user, env).await
+    let registry = build_registry(&loaded.config);
+    let mut all_env: Vec<String> = Vec::new();
+    for module in &registry {
+        if !module.enabled() { continue; }
+        match module.pre_exec(&loaded.ctx).await {
+            Ok(output) => {
+                for (k, v) in output.env_vars {
+                    all_env.push(format!("{k}={v}"));
+                }
+            }
+            Err(e) => tracing::warn!("module {} pre_exec error: {:#}", module.name(), e),
+        }
+    }
+    all_env.extend_from_slice(env);
+
+    podman::exec(&loaded.ctx.container_name, shell, extra_cmd, &exec_env, &workdir, user, &all_env, &loaded.config.container.exec_args).await
 }
 
 fn resolve_exec_workdir(config_workdir: &Option<String>, ctx: &Context) -> String {

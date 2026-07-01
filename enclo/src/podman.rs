@@ -54,6 +54,7 @@ pub async fn exec(
     workdir: &str,
     user: Option<&str>,
     extra_env: &[String],
+    extra_args: &[String],
 ) -> Result<()> {
     debug!("podman exec into {}", container);
     let mut cmd = Command::new("podman");
@@ -68,8 +69,35 @@ pub async fn exec(
     for e in extra_env {
         cmd.arg(format!("--env={e}"));
     }
+    cmd.args(extra_args);
     cmd.arg(container).arg(shell).args(shell_args);
     let status = cmd.status().await.context("failed to spawn podman exec")?;
+    if !status.success() {
+        anyhow::bail!("podman exec exited with {}", status);
+    }
+    Ok(())
+}
+
+pub async fn exec_as_with_stdin(container: &str, user: &str, args: &[&str], stdin_data: Vec<u8>) -> Result<()> {
+    use std::process::Stdio;
+    use tokio::io::AsyncWriteExt;
+
+    debug!("podman exec --user {} {} {:?} (with stdin)", user, container, args);
+    let mut child = Command::new("podman")
+        .arg("exec")
+        .arg("--interactive")
+        .arg(format!("--user={}", user))
+        .arg(container)
+        .args(args)
+        .stdin(Stdio::piped())
+        .spawn()
+        .context("failed to spawn podman exec")?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(&stdin_data).await?;
+    }
+
+    let status = child.wait().await.context("failed to wait for podman exec")?;
     if !status.success() {
         anyhow::bail!("podman exec exited with {}", status);
     }

@@ -9,6 +9,7 @@ mod podman_socket;
 mod secrets;
 mod ssh_agent;
 mod support;
+mod terminfo;
 mod wayland;
 mod xdg_open;
 
@@ -22,6 +23,7 @@ pub use nvidia::Nvidia;
 pub use podman_socket::PodmanSocket;
 pub use secrets::Secrets;
 pub use ssh_agent::SshAgent;
+pub use terminfo::Terminfo;
 pub use wayland::Wayland;
 pub use xdg_open::XdgOpen;
 
@@ -43,5 +45,6 @@ pub fn build_registry(config: &Config) -> Vec<Arc<dyn Module>> {
         Arc::new(XdgOpen::new(m.xdg_open.clone())),
         Arc::new(Drm::new(m.drm.clone())),
         Arc::new(Wayland::new(m.wayland.clone())),
+        Arc::new(Terminfo::new(m.terminfo.clone())),
     ]
 }

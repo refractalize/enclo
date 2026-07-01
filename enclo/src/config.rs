@@ -40,6 +40,10 @@ pub struct ContainerConfig {
     /// Maximum number of PIDs allowed in the container. Maps to
     /// `podman run --pids-limit`. Use -1 for unlimited.
     pub pids_limit: Option<i64>,
+    /// Extra arguments passed verbatim to `podman exec` on every `enclo enter` / `enclo exec`.
+    /// Useful for flags like `--detach-keys=""`.
+    #[serde(default)]
+    pub exec_args: Vec<String>,
 }
 
 fn default_network() -> String { "host".into() }
@@ -76,6 +80,8 @@ pub struct ModulesConfig {
     pub drm: DrmConfig,
     #[serde(default)]
     pub wayland: WaylandConfig,
+    #[serde(default)]
+    pub terminfo: TerminfoConfig,
 }
 
 #[derive(Debug, Deserialize, Default, Clone, PartialEq, Eq)]
@@ -229,6 +235,19 @@ pub struct XdgOpenConfig {
 pub struct DrmConfig {
     #[serde(default)]
     pub enabled: bool,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct TerminfoConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+impl Default for TerminfoConfig {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
 }
 
 #[derive(Debug, Deserialize, Default, Clone)]
