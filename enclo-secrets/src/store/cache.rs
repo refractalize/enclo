@@ -1,9 +1,9 @@
 use std::{
     collections::HashMap,
-    sync::Arc,
+    sync::{Arc, Weak},
     time::{Duration, Instant},
 };
-use tokio::sync::{Mutex, Notify, RwLock};
+use tokio::sync::{Mutex, Notify};
 use zeroize::Zeroizing;
 
 struct SecretString(Zeroizing<String>);
@@ -48,27 +48,23 @@ struct Entry {
 }
 
 pub struct Cache {
-    ttls: Arc<RwLock<(Duration, Duration)>>,
+    ttls: Arc<(Duration, Duration)>,
     entries: Arc<Mutex<HashMap<String, Entry>>>,
     mlock: bool,
 }
 
 impl Cache {
     pub fn new(idle_ttl: Duration, max_ttl: Duration, mlock: bool, shutdown: Arc<Notify>) -> Self {
-        let ttls = Arc::new(RwLock::new((idle_ttl, max_ttl)));
+        let ttls = Arc::new((idle_ttl, max_ttl));
         let entries: Arc<Mutex<HashMap<String, Entry>>> = Arc::new(Mutex::new(HashMap::new()));
 
-        spawn_eviction(Arc::clone(&ttls), Arc::clone(&entries), shutdown);
+        spawn_eviction(Arc::downgrade(&ttls), Arc::downgrade(&entries), shutdown);
 
         Self { ttls, entries, mlock }
     }
 
-    pub async fn reload(&self, idle_ttl: Duration, max_ttl: Duration) {
-        *self.ttls.write().await = (idle_ttl, max_ttl);
-    }
-
     pub async fn get(&self, name: &str) -> Option<String> {
-        let (idle_ttl, max_ttl) = *self.ttls.read().await;
+        let (idle_ttl, max_ttl) = *self.ttls;
         let mut entries = self.entries.lock().await;
         let now = Instant::now();
         if let Some(entry) = entries.get_mut(name) {
@@ -97,8 +93,8 @@ impl Cache {
 }
 
 fn spawn_eviction(
-    ttls: Arc<RwLock<(Duration, Duration)>>,
-    entries: Arc<Mutex<HashMap<String, Entry>>>,
+    ttls: Weak<(Duration, Duration)>,
+    entries: Weak<Mutex<HashMap<String, Entry>>>,
     shutdown: Arc<Notify>,
 ) {
     tokio::spawn(async move {
@@ -108,7 +104,11 @@ fn spawn_eviction(
                 _ = shutdown.notified() => break,
             }
 
-            let (idle_ttl, max_ttl) = *ttls.read().await;
+            let (Some(ttls), Some(entries)) = (ttls.upgrade(), entries.upgrade()) else {
+                break;
+            };
+
+            let (idle_ttl, max_ttl) = *ttls;
             let now = Instant::now();
             entries.lock().await.retain(|_, entry| {
                 now.duration_since(entry.last_accessed) < idle_ttl

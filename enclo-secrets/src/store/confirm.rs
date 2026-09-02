@@ -1,15 +1,29 @@
-use std::{sync::Arc, time::Duration};
+use std::{collections::HashSet, sync::Arc, time::Duration};
 use tokio::sync::{broadcast, oneshot, Mutex, RwLock};
 
 type Waiter = (String, oneshot::Sender<Result<(), String>>);
 
 struct State {
-    /// Accumulating waiters during the debounce window. None when idle or a
-    /// dialog is in progress.
+    /// Accumulating waiters for the next dialog. This may be populated while
+    /// another dialog is in progress.
     batch: Option<Vec<Waiter>>,
-    /// Set while a confirmation dialog is visible. Requests arriving during
-    /// this window subscribe to the broadcast instead of starting a new dialog.
-    inflight: Option<broadcast::Sender<Result<(), String>>>,
+    /// Set while a confirmation dialog is visible. Only requests for names
+    /// displayed in that dialog may subscribe to its result.
+    inflight: Option<Inflight>,
+}
+
+struct Inflight {
+    names: HashSet<String>,
+    result: broadcast::Sender<Result<(), String>>,
+}
+
+impl State {
+    fn inflight_result(&self, name: &str) -> Option<&broadcast::Sender<Result<(), String>>> {
+        self.inflight
+            .as_ref()
+            .filter(|inflight| inflight.names.contains(name))
+            .map(|inflight| &inflight.result)
+    }
 }
 
 struct Inner {
@@ -55,9 +69,8 @@ impl Confirm {
 
         let mut state = self.0.state.lock().await;
 
-        // A dialog is already visible — subscribe to its result instead of
-        // starting a new one.
-        if let Some(tx) = &state.inflight {
+        // Share the visible dialog only when this exact secret was displayed.
+        if let Some(tx) = state.inflight_result(&name) {
             let mut rx = tx.subscribe();
             drop(state);
             return rx.recv().await.unwrap_or_else(|_| Err("confirm dialog dropped".into()));
@@ -74,16 +87,34 @@ impl Confirm {
             tokio::spawn(async move {
                 tokio::time::sleep(debounce).await;
 
-                // Take the batch and set inflight atomically.
-                let (pending, itx) = {
+                // If another dialog is visible, wait for it to finish before
+                // taking the next batch. This keeps dialogs serialized while
+                // allowing the pending batch to continue accumulating names.
+                let (pending, itx, names) = loop {
                     let mut state = inner.state.lock().await;
+                    if let Some(inflight) = &state.inflight {
+                        let mut finished = inflight.result.subscribe();
+                        drop(state);
+                        let _ = finished.recv().await;
+                        continue;
+                    }
+
                     let pending = state.batch.take().unwrap_or_default();
+                    let mut seen = HashSet::new();
+                    let names: Vec<String> = pending
+                        .iter()
+                        .filter_map(|(name, _)| {
+                            seen.insert(name.clone()).then(|| name.clone())
+                        })
+                        .collect();
                     let (itx, _) = broadcast::channel(64);
-                    state.inflight = Some(itx.clone());
-                    (pending, itx)
+                    state.inflight = Some(Inflight {
+                        names: names.iter().cloned().collect(),
+                        result: itx.clone(),
+                    });
+                    break (pending, itx, names);
                 };
 
-                let names: Vec<String> = pending.iter().map(|(n, _)| n.clone()).collect();
                 tracing::info!(secrets = ?names, "confirmation requested");
                 let approved = run_pinentry(&inner.app_name, &names).await;
                 if approved {
@@ -105,6 +136,34 @@ impl Confirm {
         }
 
         rx.await.unwrap_or_else(|_| Err("confirm task dropped".into()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state_with_inflight(names: &[&str]) -> State {
+        let (result, _) = broadcast::channel(4);
+        State {
+            batch: None,
+            inflight: Some(Inflight {
+                names: names.iter().map(|name| (*name).to_string()).collect(),
+                result,
+            }),
+        }
+    }
+
+    #[test]
+    fn same_secret_can_share_inflight_approval() {
+        let state = state_with_inflight(&["SECRET_A"]);
+        assert!(state.inflight_result("SECRET_A").is_some());
+    }
+
+    #[test]
+    fn different_secret_cannot_share_inflight_approval() {
+        let state = state_with_inflight(&["SECRET_A"]);
+        assert!(state.inflight_result("SECRET_B").is_none());
     }
 }
 

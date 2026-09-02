@@ -688,6 +688,7 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+ "urlencoding",
  "wildmatch",
  "zeroize",
 ]

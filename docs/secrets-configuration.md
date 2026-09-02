@@ -8,7 +8,7 @@
 
 ```toml
 [store]
-# Secret backend stack: cache → confirm → router → backends
+# Secret backend stack: route → route cache → confirm → backend
 
 [secrets]
 # Unix socket API: access control
@@ -23,11 +23,11 @@ At least one of `secrets.socket` or `proxy` must be enabled.
 
 ## `[store]`
 
-Configures the layered secret fetching pipeline. Requests flow through cache → confirm → router → backend.
+Configures the layered secret fetching pipeline. Requests first resolve a route, then flow through that route's cache → global confirmation → backend.
 
 ### `[store.cache]`
 
-Caches fetched secrets in memory. Optional; omit the section to disable caching.
+Defines the default cache settings inherited by all routes. Optional; routes can also define both TTLs directly to enable caching without defaults.
 
 ```toml
 [store.cache]
@@ -41,6 +41,8 @@ mlock    = false
 | `idle_ttl` | duration string | Time-to-live reset on each access. A secret not accessed for this duration is evicted. Examples: `"5m"`, `"1h"`, `"30s"`. |
 | `max_ttl` | duration string | Hard ceiling. The secret is evicted after this duration regardless of access. |
 | `mlock` | bool | When `true`, calls `mlock()` on the cache memory pages to prevent them from being swapped to disk. Requires sufficient `RLIMIT_MEMLOCK`. Default: `false`. |
+
+Each route gets an independent cache, even when multiple routes inherit identical settings. Route-level fields override these defaults individually.
 
 ### `[store.confirm]`
 
@@ -59,6 +61,8 @@ debounce_ms = 50
 | `enabled` | bool | — | Whether confirmation is required |
 | `debounce_ms` | integer | `50` | Requests arriving within this many milliseconds are batched into a single prompt |
 
+After a dialog opens, another request for a secret already displayed in that dialog shares its result. Requests for different secrets never inherit that approval: they accumulate in a new debounce batch and are shown in a separate dialog after the active one closes.
+
 ### `[[store.routes]]`
 
 Routes secret names to backend processes using wildcard patterns. Routes are evaluated in order; the first match wins.
@@ -67,16 +71,39 @@ Routes secret names to backend processes using wildcard patterns. Routes are eva
 [[store.routes]]
 patterns = ["GITHUB_*", "NPM_TOKEN"]
 backend  = "pass"
+idle_ttl = "30m"
+max_ttl  = "8h"
 
 [[store.routes]]
 patterns = ["AWS_CREDENTIALS"]
 backend  = "aws-vault"
+cache    = false
 ```
 
 | Field | Type | Description |
 |---|---|---|
-| `patterns` | array of strings | Wildcard patterns to match against secret names. `*` matches any sequence of characters. Query-string parameters (e.g. `?profile=prod`) are stripped before matching. |
+| `patterns` | array of strings | Wildcard patterns matching secret names and, when present in the pattern, query parameters. `*` matches any sequence of characters. |
 | `backend` | string | Name of the backend to use. Must match a `[[store.backends]]` entry. |
+| `cache` | bool | Set to `false` to disable caching for this route even when `[store.cache]` exists. Set to `true` to explicitly enable it. |
+| `idle_ttl` | duration string | Overrides the default idle TTL for this route. |
+| `max_ttl` | duration string | Overrides the default maximum TTL for this route. |
+| `mlock` | bool | Overrides the default memory-locking setting for this route. |
+
+If caching is enabled, the effective configuration must contain both TTLs. A route may inherit either field from `[store.cache]`. Without global defaults, it must define both itself. Cache hits bypass confirmation; set `cache = false` for secrets that must always be confirmed and fetched.
+
+Route patterns without query parameters match every parameter variant of that secret. Add query constraints to select specific parameter values:
+
+```toml
+[[store.routes]]
+patterns = ["AWS_CREDENTIALS?profile=production-*"]
+backend  = "aws-vault"
+
+[[store.routes]]
+patterns = ["AWS_CREDENTIALS"] # fallback for every other profile
+backend  = "aws-vault"
+```
+
+Parameter names match exactly and values support wildcard patterns. All parameters in a pattern must match, while their order and any extra request parameters do not matter. Names and values are URL-decoded before matching. Routes remain first-match-wins, so parameter-specific routes must appear before broader fallbacks.
 
 ### `[[store.backends]]`
 
@@ -109,7 +136,7 @@ Backends are started lazily and restarted automatically (up to 10 times per 60-s
 | `aws-vault` | `enclo-secret-store-aws-vault` | `AWS_CREDENTIALS?profile=<profile>` |
 | `keychain` | `enclo-secret-store-keychain` | macOS Keychain (service name = secret name) |
 
-**Query parameters:** Secret names may include `?key=value` parameters (e.g. `AWS_CREDENTIALS?profile=prod`). The query string is forwarded to the backend but stripped for pattern matching.
+**Query parameters:** Secret names may include `?key=value` parameters (e.g. `AWS_CREDENTIALS?profile=prod`). The complete original name is forwarded to the backend. Parameter-less route patterns ignore the query string; route patterns containing query constraints match decoded parameter values as described above.
 
 ---
 
@@ -283,7 +310,7 @@ Explicit names are deduplicated against group members: if a name appears in both
 # secrets-config.toml
 
 [store.cache]
-idle_ttl = "10m"
+idle_ttl = "10m" # defaults for routes without overrides
 max_ttl  = "1h"
 
 [store.confirm]

@@ -13,9 +13,9 @@ use enclo_backend_protocol::ResponseResult;
 
 use crate::store::backend::BackendClient;
 use crate::store::cache::Cache;
-use crate::store::config::{BackendConfig, CacheConfig, ConfirmConfig, StoreConfig};
+use crate::store::config::{BackendConfig, ConfirmConfig, StoreConfig};
 use crate::store::confirm::Confirm;
-use crate::store::router::Router;
+use crate::store::router::{compile, Router};
 
 const RUNTIME_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -28,8 +28,6 @@ pub struct StoreStack {
 struct StoreRuntime {
     router: Router,
     backend_configs: HashMap<String, BackendConfig>,
-    cache: Option<Arc<Cache>>,
-    cache_config: Option<CacheConfig>,
     confirm: Option<Arc<Confirm>>,
     active_requests: AtomicUsize,
     idle_notify: Notify,
@@ -114,7 +112,13 @@ impl StoreStack {
         let runtime = self.runtime.read().await.clone();
         let _guard = runtime.enter();
 
-        if let Some(cache) = &runtime.cache {
+        let route = match runtime.router.resolve(name) {
+            Ok(Some(route)) => route,
+            Ok(None) => return ResponseResult::NotFound,
+            Err(error) => return ResponseResult::Error { error },
+        };
+
+        if let Some(cache) = &route.cache {
             if let Some(value) = cache.get(name).await {
                 tracing::debug!(secret = name, "secret served from cache");
                 return ResponseResult::Ok { value };
@@ -128,10 +132,16 @@ impl StoreStack {
             }
         }
 
-        let result = runtime.router.get(name).await;
+        tracing::info!(secret = name, backend = route.backend_name.as_str(), "fetching secret from backend");
+        let result = route.backend.get(name).await;
+        match &result {
+            ResponseResult::NotFound => tracing::warn!(secret = name, backend = route.backend_name.as_str(), "backend reported secret not found"),
+            ResponseResult::Error { error } => tracing::error!(secret = name, backend = route.backend_name.as_str(), error, "backend failed to fetch secret"),
+            ResponseResult::Ok { .. } => {}
+        }
 
         if let ResponseResult::Ok { ref value } = result {
-            if let Some(cache) = &runtime.cache {
+            if let Some(cache) = &route.cache {
                 cache.insert(name, value.clone()).await;
             }
         }
@@ -146,6 +156,31 @@ async fn build_runtime(
     shutdown: Arc<Notify>,
     app_name: &str,
 ) -> anyhow::Result<Arc<StoreRuntime>> {
+    let route_cache_configs = config
+        .routes
+        .iter()
+        .map(|route| {
+            if config.backend(&route.backend).is_none() {
+                anyhow::bail!("route references unknown backend '{}'", route.backend);
+            }
+            config.route_cache(route)
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+
+    let mut route_caches = Vec::with_capacity(config.routes.len());
+    for cache_config in route_cache_configs {
+        let cache = cache_config.map(|cache| {
+            Arc::new(Cache::new(
+                cache.idle_ttl,
+                cache.max_ttl,
+                cache.mlock,
+                Arc::clone(&shutdown),
+            ))
+        });
+        route_caches.push(cache);
+    }
+    let routes = compile(&config.routes, route_caches)?;
+
     let mut backend_configs = HashMap::new();
     let mut backends = HashMap::new();
 
@@ -168,40 +203,15 @@ async fn build_runtime(
         backends.insert(backend_config.name.clone(), backend);
     }
 
-    let cache = build_cache(config.cache.as_ref(), old_runtime, Arc::clone(&shutdown)).await;
     let confirm = build_confirm(config.confirm.as_ref(), old_runtime, app_name).await;
 
     Ok(Arc::new(StoreRuntime {
-        router: Router::new(&config.routes, backends),
+        router: Router::new(routes, backends),
         backend_configs,
-        cache: cache.map(|(cache, _)| cache),
-        cache_config: config.cache.clone(),
         confirm: confirm.map(|(confirm, _)| confirm),
         active_requests: AtomicUsize::new(0),
         idle_notify: Notify::new(),
     }))
-}
-
-async fn build_cache(
-    config: Option<&CacheConfig>,
-    old_runtime: Option<&Arc<StoreRuntime>>,
-    shutdown: Arc<Notify>,
-) -> Option<(Arc<Cache>, CacheConfig)> {
-    let config = config?.clone();
-
-    if let Some(runtime) = old_runtime {
-        if let (Some(cache), Some(existing)) = (&runtime.cache, &runtime.cache_config) {
-            if existing.mlock == config.mlock {
-                cache.reload(config.idle_ttl, config.max_ttl).await;
-                return Some((Arc::clone(cache), config));
-            }
-        }
-    }
-
-    Some((
-        Arc::new(Cache::new(config.idle_ttl, config.max_ttl, config.mlock, shutdown)),
-        config,
-    ))
 }
 
 async fn build_confirm(
@@ -267,10 +277,8 @@ mod tests {
 
     fn test_runtime() -> Arc<StoreRuntime> {
         Arc::new(StoreRuntime {
-            router: Router::new(&[], HashMap::new()),
+            router: Router::new(Vec::new(), HashMap::new()),
             backend_configs: HashMap::new(),
-            cache: None,
-            cache_config: None,
             confirm: None,
             active_requests: AtomicUsize::new(0),
             idle_notify: Notify::new(),

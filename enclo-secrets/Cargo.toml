@@ -33,6 +33,7 @@ serde_json = "1"
 
 # pattern matching
 wildmatch = "2"
+urlencoding = "2"
 
 # pinentry confirmation dialog
 pinentry = "0.8"
