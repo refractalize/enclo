@@ -104,6 +104,7 @@ enclo-container-client/       in-container enclo CLI
 enclo-backend-protocol/       shared codec for backend subprocesses
 enclo-secret-store-pass/      backend: pass
 enclo-secret-store-aws-vault/ backend: aws-vault
+enclo-secret-store-github/    backend: GitHub CLI auth token
 enclo-secret-store-keychain/  backend: macOS Keychain
 enclo-aws-credentials/        in-container AWS credentials helper
 enclo-container-bridge/       macOS: tunnels secrets socket via podman exec

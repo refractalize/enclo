@@ -1,0 +1,12 @@
+[package]
+name = "enclo-secret-store-github"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "enclo-secret-store-github"
+path = "src/main.rs"
+
+[dependencies]
+enclo-backend-protocol = { path = "../enclo-backend-protocol" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process"] }

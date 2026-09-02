@@ -5,6 +5,7 @@ members = [
     "enclo-container-bridge",
     "enclo-secret-store-pass",
     "enclo-secret-store-aws-vault",
+    "enclo-secret-store-github",
     "enclo-secret-store-keychain",
     "enclo-secrets",
     "enclo-aws-credentials",

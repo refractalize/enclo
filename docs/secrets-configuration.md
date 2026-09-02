@@ -134,6 +134,7 @@ Backends are started lazily and restarted automatically (up to 10 times per 60-s
 |---|---|---|
 | `pass` | `enclo-secret-store-pass` | Secret name maps to a `pass` entry path |
 | `aws-vault` | `enclo-secret-store-aws-vault` | `AWS_CREDENTIALS?profile=<profile>` |
+| `github` | `enclo-secret-store-github` | `GITHUB_TOKEN` or `GH_TOKEN` from `gh auth token` |
 | `keychain` | `enclo-secret-store-keychain` | macOS Keychain (service name = secret name) |
 
 **Query parameters:** Secret names may include `?key=value` parameters (e.g. `AWS_CREDENTIALS?profile=prod`). The complete original name is forwarded to the backend. Parameter-less route patterns ignore the query string; route patterns containing query constraints match decoded parameter values as described above.

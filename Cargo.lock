@@ -641,6 +641,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "enclo-secret-store-github"
+version = "0.1.0"
+dependencies = [
+ "enclo-backend-protocol",
+ "tokio",
+]
+
+[[package]]
 name = "enclo-secret-store-keychain"
 version = "0.1.0"
 dependencies = [
