@@ -39,6 +39,7 @@ impl ContainerStatus {
 }
 
 struct ContainerEntry {
+    startup_deadline: tokio::time::Instant,
     status_tx: watch::Sender<ContainerStatus>,
     reloadable: Vec<Arc<dyn Module>>,
     all_enabled: Vec<Arc<dyn Module>>,
@@ -88,10 +89,10 @@ impl Manager {
     async fn entry_snapshot(
         &self,
         name: &str,
-    ) -> Option<(ContainerStatus, watch::Receiver<ContainerStatus>)> {
+    ) -> Option<(ContainerStatus, watch::Receiver<ContainerStatus>, tokio::time::Instant)> {
         let guard = self.inner.lock().await;
         guard.containers.get(name).map(|entry| {
-            (entry.status_tx.borrow().clone(), entry.status_tx.subscribe())
+            (entry.status_tx.borrow().clone(), entry.status_tx.subscribe(), entry.startup_deadline)
         })
     }
 
@@ -151,8 +152,9 @@ impl Manager {
 
     /// Spawn a container task. Returns a watch receiver; the task signals
     /// Running via the oneshot then continues until the container exits.
-    async fn spawn_start(&self, name: String, config_path: Option<&str>) -> Result<watch::Receiver<ContainerStatus>> {
+    async fn spawn_start(&self, name: String, config_path: Option<&str>) -> Result<(watch::Receiver<ContainerStatus>, tokio::time::Instant)> {
         let (config, ctx) = self.load(&name, config_path).await?;
+        let deadline = startup_deadline(config.container.startup_timeout_secs);
         let modules = modules::build_registry(&config);
         let (reloadable, all_enabled) = classify_modules(&modules);
         let orch = Orchestrator::new(modules);
@@ -207,6 +209,7 @@ impl Manager {
         });
 
         self.inner.lock().await.containers.insert(name.clone(), ContainerEntry {
+            startup_deadline: deadline,
             status_tx,
             reloadable,
             all_enabled,
@@ -215,7 +218,45 @@ impl Manager {
             _task: task,
         });
 
-        Ok(rx)
+        Ok((rx, deadline))
+    }
+}
+
+// Preserve the former 90-second allowance for setup and post-start work.
+fn startup_deadline(timeout_secs: std::num::NonZeroU32) -> tokio::time::Instant {
+    tokio::time::Instant::now()
+        + std::time::Duration::from_secs(u64::from(timeout_secs.get()) + 90)
+}
+
+async fn wait_for_start(
+    name: &str,
+    mut rx: watch::Receiver<ContainerStatus>,
+    deadline: tokio::time::Instant,
+) -> zbus::fdo::Result<()> {
+    loop {
+        // Inspect the current value too: a subscriber can join after an update.
+        match rx.borrow_and_update().clone() {
+            ContainerStatus::Running => return Ok(()),
+            ContainerStatus::Error(msg) => return Err(zbus::fdo::Error::Failed(msg)),
+            ContainerStatus::Stopped => return Err(zbus::fdo::Error::Failed(
+                "container exited before reaching running state".into()
+            )),
+            _ => {}
+        }
+        tokio::select! {
+            result = rx.changed() => {
+                if result.is_err() {
+                    return Err(zbus::fdo::Error::Failed(
+                        "container task exited unexpectedly".into()
+                    ));
+                }
+            }
+            _ = tokio::time::sleep_until(deadline) => {
+                return Err(zbus::fdo::Error::Failed(
+                    format!("timed out waiting for container '{}' to start", name)
+                ));
+            }
+        }
     }
 }
 
@@ -229,9 +270,9 @@ impl Manager {
         // If already running or starting, subscribe to the existing watch and wait.
         let existing_rx = self.entry_snapshot(&name).await;
 
-        let mut rx = match existing_rx {
-            Some((ContainerStatus::Running, _)) => return Ok(()),
-            Some((ContainerStatus::Starting, rx)) => rx,
+        let (rx, deadline) = match existing_rx {
+            Some((ContainerStatus::Running, _, _)) => return Ok(()),
+            Some((ContainerStatus::Starting, rx, deadline)) => (rx, deadline),
             Some(_) | None => {
                 let path = if config_path.is_empty() { None } else { Some(config_path.as_str()) };
                 self.spawn_start(name.clone(), path).await
@@ -239,33 +280,7 @@ impl Manager {
             }
         };
 
-        // Wait until Running or Error (up to 120 s)
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(120);
-        loop {
-            tokio::select! {
-                result = rx.changed() => {
-                    if result.is_err() {
-                        // Watch sender dropped — task finished
-                        return Err(zbus::fdo::Error::Failed(
-                            "container task exited unexpectedly".into()
-                        ));
-                    }
-                    match rx.borrow().clone() {
-                        ContainerStatus::Running => return Ok(()),
-                        ContainerStatus::Error(msg) => return Err(zbus::fdo::Error::Failed(msg)),
-                        ContainerStatus::Stopped => return Err(zbus::fdo::Error::Failed(
-                            "container exited before reaching running state".into()
-                        )),
-                        _ => continue,
-                    }
-                }
-                _ = tokio::time::sleep_until(deadline) => {
-                    return Err(zbus::fdo::Error::Failed(
-                        format!("timed out waiting for container '{}' to start", name)
-                    ));
-                }
-            }
-        }
+        wait_for_start(&name, rx, deadline).await
     }
 
     async fn check_user_sessions(&self, name: &str) -> zbus::fdo::Result<()> {
@@ -573,4 +588,43 @@ fn classify_modules(modules: &[Arc<dyn Module>]) -> (Vec<Arc<dyn Module>>, Vec<A
         .map(Arc::clone)
         .collect();
     (reloadable, all_enabled)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{num::NonZeroU32, time::Duration};
+
+    #[tokio::test(start_paused = true)]
+    async fn custom_startup_wait_exceeds_old_daemon_limit() {
+        let deadline = startup_deadline(NonZeroU32::new(180).unwrap());
+        let (tx, rx) = watch::channel(ContainerStatus::Starting);
+        let update = async {
+            tokio::time::sleep(Duration::from_secs(150)).await;
+            tx.send(ContainerStatus::Running).unwrap();
+        };
+        let (result, ()) = tokio::join!(wait_for_start("test", rx, deadline), update);
+        result.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn joining_startup_preserves_original_deadline() {
+        let start = tokio::time::Instant::now();
+        let deadline = startup_deadline(NonZeroU32::new(60).unwrap());
+        let (tx, _rx) = watch::channel(ContainerStatus::Starting);
+        tokio::time::sleep(Duration::from_secs(100)).await;
+        let error = wait_for_start("test", tx.subscribe(), deadline).await.unwrap_err();
+        assert!(error.to_string().contains("timed out"));
+        assert_eq!(start.elapsed(), Duration::from_secs(150));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn startup_observes_current_status_and_errors() {
+        let deadline = startup_deadline(NonZeroU32::new(60).unwrap());
+        let (tx, rx) = watch::channel(ContainerStatus::Running);
+        wait_for_start("test", rx, deadline).await.unwrap();
+        tx.send_replace(ContainerStatus::Error("startup failed".into()));
+        let error = wait_for_start("test", tx.subscribe(), deadline).await.unwrap_err();
+        assert!(error.to_string().contains("startup failed"));
+    }
 }

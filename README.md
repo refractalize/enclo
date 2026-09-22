@@ -31,19 +31,55 @@ A built-in secrets service (`enclo-secrets`) provides an in-container Unix socke
 - **Daemon mode** — Linux D-Bus daemon (`org.enclo.Manager`) or macOS Unix socket daemon for start/stop/status
 - **Hot reload** — `enclo reload` sends SIGHUP to modules that support it (secrets, proxy)
 
-## Installation
+## Build and installation
+
+Use mise to build in your existing Linux development container and install on the
+Linux host, with the checkout shared between them:
 
 ```bash
-cargo build --release
-./install.sh          # copies all binaries to ~/.local/bin/
+# Inside the container:
+mise run build
+
+# On the host, from the same checkout:
+mise run install
 ```
 
-Enable the systemd user service (Linux):
+`mise run build` builds the workspace in release mode into `target/release`.
+`mise run install` only installs those artifacts and the user service files;
+it never builds or invokes Cargo. It checks all required binaries exist before
+changing installed files. Rust is supplied by the build environment, with no
+project-wide mise tool declaration that would require it on the host.
+
+The build container must use the host's CPU architecture and compatible system
+libraries (using the same distro release is the simplest option). If the checkout
+is not shared, copy the release artifacts into the host checkout's `target/release`
+directory first.
+
+Other development commands:
 
 ```bash
-systemctl --user enable enclo.service
+mise run test        # cargo test --workspace
+mise run check       # cargo check --workspace
+mise tasks           # list available tasks
+```
+
+The scripts also work without mise: `bash scripts/build.sh` and
+`bash scripts/install.sh`. The root `./install.sh` is also an install-only entrypoint.
+Build separately with `mise run build` before installing.
+
+On macOS, the build script also compiles the Swift approval helper and uses Podman
+to build Linux container helpers, staging them in `target/release/linux`. The
+installer copies these prebuilt artifacts and loads the LaunchAgent. Native macOS
+artifacts must be built in a macOS build environment.
+
+On Linux, installation reloads systemd and enables the user service. Start it with:
+
+```bash
 systemctl --user start enclo.service
 ```
+
+Installing updated binaries does not restart an already running Linux daemon.
+Restart it explicitly when you are ready for it to pick up the new version.
 
 ## Quick start
 

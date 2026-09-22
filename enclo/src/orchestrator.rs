@@ -140,6 +140,7 @@ impl Orchestrator {
                 &setup.active,
                 &setup.combined.post_start_cmds,
                 ready.is_some(),
+                u64::from(config.container.startup_timeout_secs.get()),
                 &mut container_proc,
             )
             .await
@@ -256,13 +257,14 @@ impl Orchestrator {
         active: &[Arc<dyn Module>],
         post_start_cmds: &[PostStartCmd],
         wait_for_ready: bool,
+        timeout_secs: u64,
         container_proc: &mut tokio::process::Child,
     ) -> Result<()> {
         if !wait_for_ready && post_start_cmds.is_empty() {
             return Ok(());
         }
 
-        if let Err(error) = podman::wait_running(&ctx.container_name, 30).await {
+        if let Err(error) = podman::wait_running(&ctx.container_name, timeout_secs).await {
             podman::stop(&ctx.container_name).await.ok();
             let _ = container_proc.wait().await;
             self.teardown_modules(ctx, active).await;

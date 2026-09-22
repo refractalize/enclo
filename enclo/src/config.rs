@@ -13,6 +13,9 @@ pub struct ContainerConfig {
     #[serde(default)]
     pub name: String,
     pub image: String,
+    /// Seconds to wait for Podman to report the container as running.
+    #[serde(default = "default_startup_timeout_secs")]
+    pub startup_timeout_secs: std::num::NonZeroU32,
     #[serde(default = "default_network")]
     pub network: String,
     #[serde(default = "default_userns")]
@@ -44,6 +47,10 @@ pub struct ContainerConfig {
     /// Useful for flags like `--detach-keys=""`.
     #[serde(default)]
     pub exec_args: Vec<String>,
+}
+
+fn default_startup_timeout_secs() -> std::num::NonZeroU32 {
+    std::num::NonZeroU32::new(60).unwrap()
 }
 
 fn default_network() -> String { "host".into() }
@@ -317,5 +324,30 @@ fn resolve_str(base: &std::path::Path, s: &str) -> String {
         s.to_string()
     } else {
         base.join(s).to_string_lossy().into_owned()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn startup_timeout_default_and_override() {
+        let default: ContainerConfig = toml::from_str("image = 'test'").unwrap();
+        assert_eq!(default.startup_timeout_secs.get(), 60);
+        let custom: ContainerConfig = toml::from_str(
+            "image = 'test'\nstartup_timeout_secs = 180",
+        ).unwrap();
+        assert_eq!(custom.startup_timeout_secs.get(), 180);
+    }
+
+    #[test]
+    fn startup_timeout_rejects_invalid_values() {
+        for value in ["0", "-1", "1.5", "'60'", "4294967296"] {
+            let error = toml::from_str::<ContainerConfig>(
+                &format!("image = 'test'\nstartup_timeout_secs = {value}"),
+            ).unwrap_err();
+            assert!(error.to_string().contains("startup_timeout_secs"));
+        }
     }
 }

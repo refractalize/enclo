@@ -23,3 +23,6 @@ zbus = { version = "5", features = ["tokio"] }
 which = "7"
 wayland-client = "0.31"
 wayland-protocols = { version = "0.32", features = ["client", "staging"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }

@@ -14,16 +14,24 @@ pub async fn run(args: &[OsString]) -> Result<tokio::process::Child> {
 }
 
 pub async fn wait_running(container: &str, timeout_secs: u64) -> Result<()> {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+    wait_running_with(container, timeout_secs, || container_state(container)).await
+}
+
+async fn wait_running_with<F, Fut>(container: &str, timeout_secs: u64, mut state: F) -> Result<()>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<String>>,
+{
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
     loop {
-        let state = container_state(container).await?;
+        let state = state().await?;
         if state == "running" {
             return Ok(());
         }
         if state == "exited" || state == "stopped" {
             anyhow::bail!("container {} exited before becoming ready", container);
         }
-        if std::time::Instant::now() >= deadline {
+        if tokio::time::Instant::now() >= deadline {
             anyhow::bail!("container {} did not reach running state within {}s", container, timeout_secs);
         }
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -191,3 +199,38 @@ pub async fn container_state(container: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn readiness_can_take_longer_than_old_timeout() {
+        let start = tokio::time::Instant::now();
+        wait_running_with("test", 60, || async {
+            Ok(if start.elapsed().as_secs() >= 45 { "running" } else { "created" }.into())
+        }).await.unwrap();
+        assert!(start.elapsed().as_secs() >= 45);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn readiness_uses_custom_timeout() {
+        let start = tokio::time::Instant::now();
+        let error = wait_running_with("test", 180, || async { Ok("created".into()) })
+            .await.unwrap_err();
+        assert!(error.to_string().contains("within 180s"));
+        assert!(start.elapsed().as_secs() >= 180);
+        assert!(start.elapsed().as_secs() <= 181);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn early_exit_fails_without_waiting() {
+        for state in ["exited", "stopped"] {
+            let start = tokio::time::Instant::now();
+            let error = wait_running_with("test", 60, || async { Ok(state.into()) })
+                .await.unwrap_err();
+            assert!(error.to_string().contains("exited before becoming ready"));
+            assert!(start.elapsed().is_zero());
+        }
+    }
+}

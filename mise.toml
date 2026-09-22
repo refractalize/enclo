@@ -1,0 +1,17 @@
+# Cargo and any native build tools come from the build environment.
+# No project-wide tools: installation on the host needs no Rust toolchain.
+[tasks.build]
+description = "Build release artifacts in the build environment"
+run = "bash scripts/build.sh"
+
+[tasks.test]
+description = "Run workspace tests"
+run = "cargo test --workspace"
+
+[tasks.check]
+description = "Check the Rust workspace"
+run = "cargo check --workspace"
+
+[tasks.install]
+description = "Install prebuilt artifacts on the host (never builds)"
+run = "bash scripts/install.sh"

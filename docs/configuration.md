@@ -6,7 +6,7 @@ Container configs live at `~/.config/enclo/containers/<NAME>.toml`. Pass an expl
 
 ## `[container]`
 
-Core container settings passed to `podman run`.
+Core container settings and startup behavior.
 
 ### `name` *(required)*
 
@@ -23,6 +23,21 @@ image = "localhost/dev-container:latest"
 ```
 
 The container image URI passed to `podman run`.
+
+### `startup_timeout_secs`
+
+```toml
+startup_timeout_secs = 60   # default; increase for slower startup, e.g. 180
+```
+
+Positive integer seconds (1–4294967295) to wait after launching Podman for the
+container to reach `running`. Existing configs use 60 seconds when omitted.
+This checks the container state, not application health. A container that exits
+early still fails immediately; a timeout triggers the existing stop and cleanup.
+
+The daemon allows an additional 90 seconds for module setup and post-start work.
+Calls joining an existing startup share its original deadline. Changes apply on
+the next container start, not through module reload.
 
 ### `network`
 
