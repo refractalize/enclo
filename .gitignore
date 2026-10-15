@@ -1,2 +1,27 @@
 /target/
 examples/certs/
+
+# Local environment files (keep example templates trackable).
+.env
+.env.*
+!.env.example
+!.env.*.example
+!.env.sample
+!.env.*.sample
+
+# Local mise configuration and environment-specific overrides.
+mise.local.toml
+mise.*.local.toml
+.mise.local.toml
+.mise.*.local.toml
+
+# Local credentials and private key material.
+.aws/
+.ssh/
+.gnupg/
+*.key
+*.p12
+*.pfx
+id_rsa
+id_ecdsa
+id_ed25519
