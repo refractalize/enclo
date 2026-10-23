@@ -241,6 +241,9 @@ impl Orchestrator {
                 }
                 Err(error) => {
                     warn!("module {} failed: {:#}", module.name(), error);
+                    if let Err(teardown_error) = module.teardown(ctx).await {
+                        warn!("failed module teardown: {teardown_error:#}");
+                    }
                     remove_exec_env(ctx).await;
                     self.teardown_modules(ctx, &active).await;
                     return Err((module.name().to_string(), error));
