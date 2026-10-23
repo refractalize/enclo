@@ -94,26 +94,6 @@ pub fn resolve_container_binary_path(binary: &str) -> anyhow::Result<PathBuf> {
     resolve_binary_path(binary)
 }
 
-pub async fn wait_for_path(
-    path: &Path,
-    attempts: u32,
-    interval: Duration,
-    description: &str,
-) -> anyhow::Result<()> {
-    for _ in 0..attempts {
-        if path.exists() {
-            return Ok(());
-        }
-        tokio::time::sleep(interval).await;
-    }
-
-    anyhow::bail!(
-        "{description} did not appear at {} after {}ms",
-        path.display(),
-        attempts as u64 * interval.as_millis() as u64,
-    )
-}
-
 pub async fn wait_for_unix_socket(
     path: &Path,
     attempts: u32,
@@ -138,22 +118,6 @@ pub async fn wait_for_unix_socket(
         path.display(),
         attempts as u64 * interval.as_millis() as u64,
     )
-}
-
-pub async fn wait_for_tcp(
-    addr: std::net::SocketAddr,
-    attempts: u32,
-    interval: Duration,
-    description: &str,
-) -> anyhow::Result<()> {
-    for _ in 0..attempts {
-        if tokio::net::TcpStream::connect(addr).await.is_ok() {
-            return Ok(());
-        }
-        tokio::time::sleep(interval).await;
-    }
-
-    anyhow::bail!("{description} did not become ready at {addr}")
 }
 
 pub async fn ensure_unix_socket_connectable(path: &Path, description: &str) -> anyhow::Result<()> {

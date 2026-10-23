@@ -7,6 +7,7 @@ mod tls;
 
 use std::{
     collections::HashMap,
+    os::fd::{FromRawFd, RawFd},
     path::PathBuf,
     sync::{
         atomic::{AtomicUsize, Ordering},
@@ -59,9 +60,14 @@ enum Command {
         #[arg(long, requires = "username")]
         password_hash: Option<String>,
 
-        /// Override the proxy listen address from config (e.g. 127.0.0.1:8080)
+        /// Override the proxy listen address from config (e.g. 127.0.0.1:8080).
+        /// The port must be fixed (not 0).
         #[arg(long)]
         listen: Option<std::net::SocketAddr>,
+        /// Serve the proxy on an inherited, already-listening TCP socket instead
+        /// of binding one. Its address replaces --listen and proxy.listen.
+        #[arg(long, conflicts_with = "listen")]
+        listen_fd: Option<RawFd>,
     },
 
     /// Generate an Argon2 password hash for proxy authentication.
@@ -125,7 +131,7 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.command {
         Command::GenerateBasicAuth { username } => cmd_generate_basic_auth(&username),
-        Command::Serve { config, socket, username, password_hash, listen } => {
+        Command::Serve { config, socket, username, password_hash, listen, listen_fd } => {
             let cli_auth = match (username, password_hash) {
                 (Some(username), Some(password_hash)) => {
                     Some(config::ProxyAuthConfig { username, password_hash })
@@ -133,9 +139,26 @@ async fn main() -> anyhow::Result<()> {
                 _ => None,
             };
             let config_path = config.unwrap_or_else(default_config_path);
-            run(config_path, socket, cli_auth, listen).await
+            let inherited = listen_fd.map(inherit_listener).transpose()?;
+            run(config_path, socket, cli_auth, listen, inherited).await
         }
     }
+}
+
+/// Takes ownership of a listening socket passed by the parent process.
+fn inherit_listener(fd: RawFd) -> anyhow::Result<std::net::TcpListener> {
+    anyhow::ensure!(fd > 2, "--listen-fd must not be a standard stream");
+    // Keep the listener out of backend subprocesses.
+    if unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } == -1 {
+        anyhow::bail!("--listen-fd {fd}: {}", std::io::Error::last_os_error());
+    }
+    // SAFETY: the fd is open and nothing else in this process owns it.
+    let listener = unsafe { std::net::TcpListener::from_raw_fd(fd) };
+    listener
+        .local_addr()
+        .map_err(|e| anyhow::anyhow!("--listen-fd {fd} is not a TCP socket: {e}"))?;
+    listener.set_nonblocking(true)?;
+    Ok(listener)
 }
 
 fn default_config_path() -> PathBuf {
@@ -176,16 +199,20 @@ async fn run(
     socket_override: Option<PathBuf>,
     cli_auth: Option<config::ProxyAuthConfig>,
     listen_override: Option<std::net::SocketAddr>,
+    inherited_listener: Option<std::net::TcpListener>,
 ) -> anyhow::Result<()> {
     rustls::crypto::ring::default_provider()
         .install_default()
         .expect("failed to install rustls crypto provider");
 
-    let mut config = config::Config::from_file(&config_path)
+    // An inherited listener's address is kept across reloads, so the
+    // listener is never rebound.
+    let listen_override = match &inherited_listener {
+        Some(listener) => Some(listener.local_addr()?),
+        None => listen_override,
+    };
+    let config = config::Config::from_file_with_listen(&config_path, listen_override)
         .map_err(|e| anyhow::anyhow!("failed to load config {}: {e}", config_path.display()))?;
-    if let Some(addr) = listen_override {
-        config.proxy.listen = Some(addr);
-    }
 
     let shutdown = Arc::new(Notify::new());
     let store = Arc::new(
@@ -199,6 +226,24 @@ async fn run(
 
     service::spawn_shutdown_listener(Arc::clone(&shutdown));
     let mut sighup = signal(SignalKind::hangup())?;
+
+    // Prepare the proxy before the socket server: launchers treat the socket
+    // appearing as readiness for both.
+    let proxy = if config.proxy.enabled {
+        let runtime = Arc::new(build_http_runtime(Arc::clone(&config), Arc::clone(&store), cli_auth.as_ref()).await?);
+        let listener = match inherited_listener {
+            Some(listener) => TcpListener::from_std(listener)?,
+            None => {
+                let listen_addr = config.proxy.listen.expect("validated: proxy.listen required when proxy.enabled");
+                TcpListener::bind(listen_addr)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("failed to bind {listen_addr}: {e}"))?
+            }
+        };
+        Some((runtime, listener))
+    } else {
+        None
+    };
 
     // --- Socket server ---
     if config.secrets.socket.enabled {
@@ -222,16 +267,10 @@ async fn run(
     let http_client: Arc<Client<HttpConnector, Incoming>> =
         Arc::new(Client::builder(TokioExecutor::new()).build(HttpConnector::new()));
 
-    if config.proxy.enabled {
-        let listen_addr = config.proxy.listen.expect("validated: proxy.listen required when proxy.enabled");
-        let runtime = Arc::new(build_http_runtime(Arc::clone(&config), Arc::clone(&store), cli_auth.as_ref()).await?);
+    if let Some((runtime, listener)) = proxy {
         let runtime_state = Arc::new(RwLock::new(Arc::clone(&runtime)));
 
-        let listener = TcpListener::bind(listen_addr)
-            .await
-            .map_err(|e| anyhow::anyhow!("failed to bind {listen_addr}: {e}"))?;
-
-        tracing::info!("HTTP listener on {listen_addr}");
+        tracing::info!("HTTP listener on {}", listener.local_addr()?);
         if runtime.proxy_auth.is_some() {
             tracing::info!("proxy authentication enabled");
         }
@@ -252,6 +291,7 @@ async fn run(
                         &store,
                         &config_state,
                         cli_auth.as_ref(),
+                        listen_override,
                         &mut active_listener,
                         &mut draining_listeners,
                         &runtime_state,
@@ -273,7 +313,7 @@ async fn run(
         loop {
             tokio::select! {
                 _ = sighup.recv() => {
-                    match config::Config::from_file(&config_path) {
+                    match config::Config::from_file_with_listen(&config_path, listen_override) {
                         Err(e) => tracing::warn!("config reload failed: {e}"),
                         Ok(new_config) => {
                             let new_config = Arc::new(new_config);
@@ -312,14 +352,14 @@ async fn reload(
     store: &Arc<store::StoreStack>,
     config_state: &Arc<RwLock<Arc<config::Config>>>,
     cli_auth: Option<&config::ProxyAuthConfig>,
+    listen_override: Option<std::net::SocketAddr>,
     active_listener: &mut Option<ListenerHandle>,
     draining_listeners: &mut Vec<JoinHandle<()>>,
     runtime_state: &Arc<RwLock<Arc<HttpRuntime>>>,
     http_client: Arc<Client<HttpConnector, Incoming>>,
     shutdown: Arc<Notify>,
 ) -> anyhow::Result<()> {
-    let new_config = config::Config::from_file(config_path)?;
-    let new_config = Arc::new(new_config);
+    let new_config = Arc::new(config::Config::from_file_with_listen(config_path, listen_override)?);
 
     store.reload(&new_config.store).await?;
     *config_state.write().await = Arc::clone(&new_config);

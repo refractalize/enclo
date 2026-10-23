@@ -1,5 +1,6 @@
 use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
+    os::fd::AsRawFd,
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
@@ -19,8 +20,6 @@ use crate::{
 
 const SOCKET_POLL_ATTEMPTS: u32 = 60;
 const SOCKET_POLL_INTERVAL_MS: u64 = 200;
-const PROXY_POLL_ATTEMPTS: u32 = 60;
-const PROXY_POLL_INTERVAL_MS: u64 = 500;
 const CONTAINER_PROXY_HOST: &str = "host.containers.internal";
 const BRIDGE_CONTAINER_PATH: &str = "/usr/local/bin/enclo-container-bridge";
 const BRIDGE_RETRY_DELAY: Duration = Duration::from_secs(2);
@@ -56,7 +55,6 @@ struct ConfigPreview {
 struct ProxyPreview {
     #[serde(default)]
     enabled: bool,
-    listen: Option<SocketAddr>,
     tls: Option<TlsPreview>,
 }
 
@@ -143,19 +141,52 @@ impl Module for Secrets {
             None
         };
 
+        // Bind the proxy port here and hand the socket to the sidecar, so the
+        // address is known up front and early connections queue in the backlog.
+        let proxy_listener = if preview.proxy.enabled {
+            let listener = std::net::TcpListener::bind(SocketAddr::new(bind_ip, 0))
+                .map_err(|e| anyhow::anyhow!("failed to bind proxy listener on {bind_ip}: {e}"))?;
+            args.extend(["--listen-fd".into(), listener.as_raw_fd().to_string()]);
+            Some(listener)
+        } else {
+            None
+        };
         tracing::info!("starting enclo-secrets");
-        let child = tokio::process::Command::new(&binary_path)
-            .args(&args)
+        let mut command = tokio::process::Command::new(&binary_path);
+        command.args(&args);
+        if let Some(listener) = &proxy_listener {
+            let fd = listener.as_raw_fd();
+            // SAFETY: fcntl is async-signal-safe. Clearing close-on-exec in the
+            // forked child lets only this sidecar inherit the listener.
+            unsafe {
+                command.pre_exec(move || {
+                    if libc::fcntl(fd, libc::F_SETFD, 0) == -1 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+        }
+        let child = command
             .spawn()
             .map_err(|e| anyhow::anyhow!("failed to spawn enclo-secrets: {e}"))?;
         self.child.store(child).await;
+        // The sidecar now owns the listener; drop this process's copy.
+        let proxy_addr = match proxy_listener {
+            Some(listener) => Some(listener.local_addr()?),
+            None => None,
+        };
 
+        // The sidecar prepares the proxy before creating its socket, so a
+        // connectable socket means both are ready; if proxy setup fails the
+        // sidecar exits and this fails straight away.
         tracing::info!("waiting for enclo-secrets socket at {}", socket_path.display());
-        support::wait_for_path(
+        support::wait_for_unix_socket(
             &socket_path,
             SOCKET_POLL_ATTEMPTS,
             std::time::Duration::from_millis(SOCKET_POLL_INTERVAL_MS),
-            "enclo-secrets socket",
+            "enclo-secrets",
+            Some(&self.child),
         )
         .await?;
 
@@ -193,22 +224,9 @@ impl Module for Secrets {
 
         // Proxy output: CA cert, update-ca-trust, and HTTP_PROXY env vars.
         if let Some(password) = proxy_password {
-            let config_listen = preview.proxy.listen
-                .ok_or_else(|| anyhow::anyhow!("proxy.listen is required when proxy.enabled = true"))?;
             let tls = preview.proxy.tls
                 .ok_or_else(|| anyhow::anyhow!("proxy.tls is required when proxy.enabled = true"))?;
-
-            let listen_addr = SocketAddr::new(bind_ip, config_listen.port());
-            args.extend(["--listen".into(), listen_addr.to_string()]);
-
-            tracing::info!("waiting for enclo-secrets proxy on {listen_addr}");
-            support::wait_for_tcp(
-                listen_addr,
-                PROXY_POLL_ATTEMPTS,
-                std::time::Duration::from_millis(PROXY_POLL_INTERVAL_MS),
-                "enclo-secrets proxy",
-            )
-            .await?;
+            let listen_addr = proxy_addr.expect("proxy listener is bound when proxy is enabled");
 
             let ca_cert = if tls.ca_cert.is_absolute() {
                 tls.ca_cert

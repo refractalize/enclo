@@ -66,3 +66,6 @@ clap = { version = "4", features = ["derive"] }
 
 # config dir resolution
 dirs-next = "2"
+
+[dev-dependencies]
+tempfile = "3"

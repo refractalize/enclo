@@ -205,7 +205,7 @@ ca_key  = "certs/ca.key"
 | Field | Type | Description |
 |---|---|---|
 | `enabled` | bool | Enable the proxy. Requires `listen` and `tls`. |
-| `listen` | socket address | Address and port the proxy listens on. Example: `"127.0.0.1:8080"`. |
+| `listen` | socket address | Address and port the proxy listens on. Example: `"127.0.0.1:8080"`. The port must be fixed (not `0`). `enclo-secrets serve --listen IP:PORT` overrides it. Ignored, and not required, when enclo starts the proxy: enclo passes a pre-bound socket on a free port via `--listen-fd`. |
 
 ### `[proxy.tls]`
 

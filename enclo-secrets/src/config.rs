@@ -88,11 +88,16 @@ pub enum AuthConfig {
 }
 
 impl Config {
-    pub fn from_file(path: &Path) -> anyhow::Result<Self> {
+    /// Loads the config, replacing `proxy.listen` with `listen` (when given)
+    /// before validation, so an overridden address need not be in the file.
+    pub fn from_file_with_listen(path: &Path, listen: Option<SocketAddr>) -> anyhow::Result<Self> {
         let text = std::fs::read_to_string(path)
             .map_err(|e| anyhow::anyhow!("failed to read config {}: {e}", path.display()))?;
         let mut config: Config = toml::from_str(&text)
             .map_err(|e| anyhow::anyhow!("failed to parse config {}: {e}", path.display()))?;
+        if listen.is_some() {
+            config.proxy.listen = listen;
+        }
 
         let base = path.parent().unwrap_or(Path::new("."));
         config.resolve_paths(base);
@@ -110,11 +115,16 @@ impl Config {
 
     fn validate(&self, path: &Path) -> anyhow::Result<()> {
         if self.proxy.enabled {
-            if self.proxy.listen.is_none() {
-                anyhow::bail!(
+            match self.proxy.listen {
+                None => anyhow::bail!(
                     "proxy.listen is required when proxy.enabled is true in {}",
                     path.display()
-                );
+                ),
+                Some(addr) if addr.port() == 0 => anyhow::bail!(
+                    "proxy.listen must use a fixed port, not 0, in {}",
+                    path.display()
+                ),
+                Some(_) => {}
             }
             if self.proxy.tls.is_none() {
                 anyhow::bail!(
