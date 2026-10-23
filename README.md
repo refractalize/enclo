@@ -33,22 +33,29 @@ A built-in secrets service (`enclo-secrets`) provides an in-container Unix socke
 
 ## Build and installation
 
-Use mise to build in your existing Linux development container and install on the
-Linux host, with the checkout shared between them:
+Where Rust is available, build and install in one step:
+
+```bash
+mise run install
+```
+
+To build in your existing Linux development container and install on a Linux
+host without Rust, with the checkout shared between them:
 
 ```bash
 # Inside the container:
 mise run build
 
 # On the host, from the same checkout:
-mise run install
+mise run install:prebuilt
 ```
 
 `mise run build` builds the workspace in release mode into `target/release`.
-`mise run install` only installs those artifacts and the user service files;
-it never builds or invokes Cargo. It checks all required binaries exist before
-changing installed files. Rust is supplied by the build environment, with no
-project-wide mise tool declaration that would require it on the host.
+`mise run install` runs `build` first, then installs those artifacts and the user
+service files. `mise run install:prebuilt` only installs; it never builds or
+invokes Cargo. Both check all required binaries exist before changing installed
+files. Rust is supplied by the build environment, with no project-wide mise tool
+declaration that would require it on the host.
 
 The build container must use the host's CPU architecture and compatible system
 libraries (using the same distro release is the simplest option). If the checkout
@@ -65,7 +72,7 @@ mise tasks           # list available tasks
 
 The scripts also work without mise: `bash scripts/build.sh` and
 `bash scripts/install.sh`. The root `./install.sh` is also an install-only entrypoint.
-Build separately with `mise run build` before installing.
+Build separately with `mise run build` before running them.
 
 On macOS, the build script also compiles the Swift approval helper and uses Podman
 to build Linux container helpers, staging them in `target/release/linux`. The

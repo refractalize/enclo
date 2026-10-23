@@ -1,5 +1,5 @@
 # Cargo and any native build tools come from the build environment.
-# No project-wide tools: installation on the host needs no Rust toolchain.
+# No project-wide tools: install:prebuilt on the host needs no Rust toolchain.
 [tasks.build]
 description = "Build release artifacts in the build environment"
 run = "bash scripts/build.sh"
@@ -13,5 +13,10 @@ description = "Check the Rust workspace"
 run = "cargo check --workspace"
 
 [tasks.install]
+description = "Build, then install release artifacts"
+depends = ["build"]
+run = "bash scripts/install.sh"
+
+[tasks."install:prebuilt"]
 description = "Install prebuilt artifacts on the host (never builds)"
 run = "bash scripts/install.sh"
