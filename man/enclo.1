@@ -47,7 +47,7 @@ Orchestrates all enabled modules, starts the container, and blocks until the
 container exits.
 .IR NAME
 defaults to
-.BR dev .
+.BR default .
 .SS start
 Ask the daemon to start a container.
 .PP
@@ -56,7 +56,7 @@ Ask the daemon to start a container.
 .PP
 .IR NAME
 defaults to
-.BR dev .
+.BR default .
 .SS stop
 Ask the daemon to stop a container.
 .PP
@@ -74,7 +74,7 @@ Without
 the command fails if any exec sessions are open.
 .IR NAME
 defaults to
-.BR dev .
+.BR default .
 .SS restart
 Ask the daemon to stop then start a container.
 .PP
@@ -87,7 +87,7 @@ Restart even if there are active exec sessions.
 .PP
 .IR NAME
 defaults to
-.BR dev .
+.BR default .
 .SS enter
 Enter a running container, starting it via the daemon first if necessary.
 .PP
@@ -97,7 +97,7 @@ Enter a running container, starting it via the daemon first if necessary.
 .PP
 .IR NAME
 defaults to
-.BR dev .
+.BR default .
 .I CMD
 defaults to the
 .B exec_shell
@@ -119,7 +119,7 @@ Exec into an already-running container without contacting the daemon.
 Errors if the container is not running. Does not attempt to start it.
 .IR NAME
 defaults to
-.BR dev .
+.BR default .
 .I CMD
 defaults to
 .B exec_shell
@@ -134,7 +134,7 @@ Currently reloads the secrets service (re-reads store config and proxy rules).
 The container is not restarted.
 .IR NAME
 defaults to
-.BR dev .
+.BR default .
 .SS status
 Show container status.
 .PP
@@ -157,7 +157,7 @@ Print what would be created without making any changes.
 .PP
 .IR NAME
 defaults to
-.BR dev .
+.BR default .
 .SH FILES
 .TP
 .I ~/.config/enclo/containers/<NAME>.toml
