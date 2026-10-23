@@ -8,7 +8,7 @@ mod tls;
 use std::{
     collections::HashMap,
     os::fd::{FromRawFd, RawFd},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicUsize, Ordering},
         Arc, Mutex as StdMutex,
@@ -347,7 +347,7 @@ async fn run(
 
 #[allow(clippy::too_many_arguments)]
 async fn reload(
-    config_path: &PathBuf,
+    config_path: &Path,
     socket_override: Option<PathBuf>,
     store: &Arc<store::StoreStack>,
     config_state: &Arc<RwLock<Arc<config::Config>>>,
