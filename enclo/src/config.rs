@@ -289,7 +289,8 @@ impl Config {
             *vol = resolve_volume_host(base, vol);
         }
         if let Some(c) = &self.modules.secrets.config {
-            self.modules.secrets.config = Some(resolve_str(base, c));
+            let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+            self.modules.secrets.config = Some(resolve_str(base, home.as_deref(), c));
         }
     }
 }
@@ -319,7 +320,16 @@ fn resolve_volume_host(base: &std::path::Path, vol: &str) -> String {
 }
 
 /// Resolves a string path against `base` unless it is absolute or a specifier.
-fn resolve_str(base: &std::path::Path, s: &str) -> String {
+/// A leading `~` expands to `home`.
+fn resolve_str(base: &std::path::Path, home: Option<&std::path::Path>, s: &str) -> String {
+    if let Some(home) = home {
+        if s == "~" {
+            return home.to_string_lossy().into_owned();
+        }
+        if let Some(rest) = s.strip_prefix("~/") {
+            return home.join(rest).to_string_lossy().into_owned();
+        }
+    }
     if s.starts_with('%') || std::path::Path::new(s).is_absolute() {
         s.to_string()
     } else {
@@ -339,6 +349,18 @@ mod tests {
             "image = 'test'\nstartup_timeout_secs = 180",
         ).unwrap();
         assert_eq!(custom.startup_timeout_secs.get(), 180);
+    }
+
+    #[test]
+    fn resolve_str_expands_tilde() {
+        let base = std::path::Path::new("/cfg/containers");
+        let home = Some(std::path::Path::new("/home/user"));
+        assert_eq!(resolve_str(base, home, "~/.config/enclo/secrets.toml"), "/home/user/.config/enclo/secrets.toml");
+        assert_eq!(resolve_str(base, home, "~"), "/home/user");
+        assert_eq!(resolve_str(base, home, "secrets.toml"), "/cfg/containers/secrets.toml");
+        assert_eq!(resolve_str(base, home, "/abs/secrets.toml"), "/abs/secrets.toml");
+        assert_eq!(resolve_str(base, home, "~other/secrets.toml"), "/cfg/containers/~other/secrets.toml");
+        assert_eq!(resolve_str(base, None, "~/secrets.toml"), "/cfg/containers/~/secrets.toml");
     }
 
     #[test]
