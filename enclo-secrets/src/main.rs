@@ -42,6 +42,13 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Generate a local CA certificate and private key for the HTTPS proxy.
+    GenCa {
+        /// Destination directory [default: ~/.config/enclo/certs]. Existing files are never overwritten.
+        #[arg(long)]
+        output_dir: Option<PathBuf>,
+    },
+
     /// Run the server
     Serve {
         /// Path to config file [default: $XDG_CONFIG_HOME/enclo-secrets/config.toml]
@@ -130,6 +137,18 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
+        Command::GenCa { output_dir } => {
+            let output_dir = match output_dir {
+                Some(path) => path,
+                None => dirs_next::home_dir()
+                    .ok_or_else(|| anyhow::anyhow!("cannot determine home directory; use --output-dir"))?
+                    .join(".config/enclo/certs"),
+            };
+            tls::ca::generate(&output_dir)?;
+            println!("CA certificate: {}", output_dir.join("ca.crt").display());
+            println!("CA private key: {}", output_dir.join("ca.key").display());
+            Ok(())
+        }
         Command::GenerateBasicAuth { username } => cmd_generate_basic_auth(&username),
         Command::Serve { config, socket, username, password_hash, listen, listen_fd } => {
             let cli_auth = match (username, password_hash) {

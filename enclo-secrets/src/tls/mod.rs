@@ -1,3 +1,5 @@
+pub mod ca;
+
 use std::{num::NonZeroUsize, sync::{Arc, Mutex}};
 use lru::LruCache;
 use rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair};

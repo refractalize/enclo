@@ -43,6 +43,7 @@ lru = "0.12"
 
 # time
 humantime-serde = "1"
+time = "0.3"
 
 # logging
 tracing = "0.1"

@@ -211,7 +211,18 @@ ca_key  = "certs/ca.key"
 
 The proxy generates a per-connection leaf certificate signed by this CA to terminate TLS. The CA certificate is automatically mounted into the container by the `secrets` module so that the container trusts it.
 
-Use `enclo-secrets gen-ca` (or `examples/gen-dev-ca.sh`) to generate a local CA.
+Generate a local CA on the host:
+
+```sh
+enclo-secrets gen-ca
+```
+
+This creates `~/.config/enclo/certs/ca.crt` and `ca.key`, valid for ten years.
+The private key is created with owner-only permissions. Existing files are never
+overwritten. Use `--output-dir <directory>` to choose another destination.
+Keep the private key on the host; only the certificate is mounted into containers.
+The container image must provide `update-ca-trust` for automatic trust setup.
+With the secrets config at `~/.config/enclo/secrets.toml`, use:
 
 ```toml
 [proxy.tls]
