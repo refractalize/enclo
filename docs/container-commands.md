@@ -20,7 +20,7 @@ At least one name or `--group` is required.
 
 | Flag | Default | Description |
 |---|---|---|
-| `-s, --socket <PATH>` | `/run/enclo/secrets.sock` | Path to the `enclo-secrets` Unix socket |
+| `-s, --socket <PATH>` | `/run/enclo/secrets/secrets.sock` | Path to the `enclo-secrets` Unix socket |
 | `-c, --config <PATH>` | `$XDG_CONFIG_HOME/enclo/client.toml` | Client config file (for group definitions) |
 | `-g, --group <GROUP>` | — | Fetch all secrets in the named group. May be repeated or comma-separated. |
 | `--env` | `false` | Print secrets as shell `export` statements instead of JSON |
@@ -85,7 +85,7 @@ The `--` separator is required. The command inherits the current environment wit
 
 | Flag | Default | Description |
 |---|---|---|
-| `-s, --socket <PATH>` | `/run/enclo/secrets.sock` | Path to the `enclo-secrets` Unix socket |
+| `-s, --socket <PATH>` | `/run/enclo/secrets/secrets.sock` | Path to the `enclo-secrets` Unix socket |
 | `-c, --config <PATH>` | `$XDG_CONFIG_HOME/enclo/client.toml` | Client config file |
 | `-g, --group <GROUP>` | — | Fetch all secrets in the named group |
 

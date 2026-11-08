@@ -109,14 +109,14 @@ enabled = true
 2. Start the container via the daemon:
 
 ```bash
-enclo start dev
-enclo enter dev        # opens a shell
+enclo start -C dev
+enclo enter -C dev        # opens a shell
 ```
 
 Or run it directly (blocking):
 
 ```bash
-enclo run dev
+enclo run -C dev
 ```
 
 3. Inside the container, fetch a secret:

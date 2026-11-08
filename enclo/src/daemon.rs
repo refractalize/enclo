@@ -10,11 +10,7 @@ use zbus::connection;
 use zbus::interface;
 
 use crate::{
-    config::Config,
-    context::Context,
-    module::Module,
-    modules,
-    orchestrator::Orchestrator,
+    config::Config, context::Context, module::Module, modules, orchestrator::Orchestrator,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -30,9 +26,9 @@ impl ContainerStatus {
     fn as_str(&self) -> &str {
         match self {
             Self::Starting => "starting",
-            Self::Running  => "running",
+            Self::Running => "running",
             Self::Stopping => "stopping",
-            Self::Stopped  => "stopped",
+            Self::Stopped => "stopped",
             Self::Error(_) => "error",
         }
     }
@@ -63,19 +59,30 @@ pub struct Manager {
 impl Manager {
     pub fn new(config_dir: std::path::PathBuf) -> Self {
         Self {
-            inner: Arc::new(Mutex::new(ManagerInner { containers: HashMap::new() })),
+            inner: Arc::new(Mutex::new(ManagerInner {
+                containers: HashMap::new(),
+            })),
             config_dir,
         }
     }
 
     fn resolve_config(&self, name: &str) -> std::path::PathBuf {
-        self.config_dir.join("containers").join(format!("{}.toml", name))
+        self.config_dir
+            .join("containers")
+            .join(format!("{}.toml", name))
     }
 
     async fn load(&self, name: &str, config_path: Option<&str>) -> Result<(Config, Context)> {
         let path = self.config_path(name, config_path);
-        let config = Config::load(&path)?;
+        let mut config = Config::load(&path)?;
+        if config.workspace.is_some() {
+            anyhow::ensure!(
+                name == config.container.name,
+                "workspace instance name does not match its directory"
+            );
+        }
         let ctx = Context::new(config.container.name.clone())?;
+        crate::home::configure(&mut config, &ctx)?;
         Ok((config, ctx))
     }
 
@@ -89,10 +96,18 @@ impl Manager {
     async fn entry_snapshot(
         &self,
         name: &str,
-    ) -> Option<(ContainerStatus, watch::Receiver<ContainerStatus>, tokio::time::Instant)> {
+    ) -> Option<(
+        ContainerStatus,
+        watch::Receiver<ContainerStatus>,
+        tokio::time::Instant,
+    )> {
         let guard = self.inner.lock().await;
         guard.containers.get(name).map(|entry| {
-            (entry.status_tx.borrow().clone(), entry.status_tx.subscribe(), entry.startup_deadline)
+            (
+                entry.status_tx.borrow().clone(),
+                entry.status_tx.subscribe(),
+                entry.startup_deadline,
+            )
         })
     }
 
@@ -103,13 +118,18 @@ impl Manager {
         }
     }
 
-    async fn wait_until_removed(&self, name: &str, timeout: std::time::Duration) -> zbus::fdo::Result<()> {
+    async fn wait_until_removed(
+        &self,
+        name: &str,
+        timeout: std::time::Duration,
+    ) -> zbus::fdo::Result<()> {
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
             if tokio::time::Instant::now() >= deadline {
-                return Err(zbus::fdo::Error::Failed(
-                    format!("timed out waiting for container '{}' to stop before restart", name)
-                ));
+                return Err(zbus::fdo::Error::Failed(format!(
+                    "timed out waiting for container '{}' to stop before restart",
+                    name
+                )));
             }
             if !self.inner.lock().await.containers.contains_key(name) {
                 return Ok(());
@@ -130,7 +150,12 @@ impl Manager {
 
     /// Stop all running containers and wait for their tasks to finish teardown.
     async fn stop_all(&self) {
-        let container_names: Vec<String> = self.inner.lock().await.containers.values()
+        let container_names: Vec<String> = self
+            .inner
+            .lock()
+            .await
+            .containers
+            .values()
             .map(|e| e.ctx.container_name.clone())
             .collect();
         for container_name in &container_names {
@@ -152,9 +177,14 @@ impl Manager {
 
     /// Spawn a container task. Returns a watch receiver; the task signals
     /// Running via the oneshot then continues until the container exits.
-    async fn spawn_start(&self, name: String, config_path: Option<&str>) -> Result<(watch::Receiver<ContainerStatus>, tokio::time::Instant)> {
+    async fn spawn_start(
+        &self,
+        name: String,
+        config_path: Option<&str>,
+    ) -> Result<(watch::Receiver<ContainerStatus>, tokio::time::Instant)> {
         let (config, ctx) = self.load(&name, config_path).await?;
-        let deadline = startup_deadline(config.container.startup_timeout_secs);
+        let deadline = startup_deadline(config.container.startup_timeout_secs)
+            + crate::home::startup_budget(&config);
         let modules = modules::build_registry(&config);
         let (reloadable, all_enabled) = classify_modules(&modules);
         let orch = Orchestrator::new(modules);
@@ -184,14 +214,20 @@ impl Manager {
                         let _ = status_for_ready.send(ContainerStatus::Running);
                     }
                     Ok(Err(e)) => {
-                        warn!("daemon: container '{}' failed to start: {:#}", name_for_ready, e);
+                        warn!(
+                            "daemon: container '{}' failed to start: {:#}",
+                            name_for_ready, e
+                        );
                         let _ = status_for_ready.send(ContainerStatus::Error(e.to_string()));
                     }
                     Err(_) => {} // sender dropped without sending — handled below
                 }
             });
 
-            match orch.start(&config, &ctx, Some(ready_tx), Some(module_timestamps)).await {
+            match orch
+                .start(&config, &ctx, Some(ready_tx), Some(module_timestamps))
+                .await
+            {
                 Ok(()) => {
                     info!("daemon: container '{}' stopped", name2);
                     let _ = status_tx2.send(ContainerStatus::Stopped);
@@ -208,15 +244,18 @@ impl Manager {
             inner.lock().await.containers.remove(&name2);
         });
 
-        self.inner.lock().await.containers.insert(name.clone(), ContainerEntry {
-            startup_deadline: deadline,
-            status_tx,
-            reloadable,
-            all_enabled,
-            module_timestamps: module_timestamps_for_entry,
-            ctx: ctx_for_entry,
-            _task: task,
-        });
+        self.inner.lock().await.containers.insert(
+            name.clone(),
+            ContainerEntry {
+                startup_deadline: deadline,
+                status_tx,
+                reloadable,
+                all_enabled,
+                module_timestamps: module_timestamps_for_entry,
+                ctx: ctx_for_entry,
+                _task: task,
+            },
+        );
 
         Ok((rx, deadline))
     }
@@ -224,8 +263,7 @@ impl Manager {
 
 // Preserve the former 90-second allowance for setup and post-start work.
 fn startup_deadline(timeout_secs: std::num::NonZeroU32) -> tokio::time::Instant {
-    tokio::time::Instant::now()
-        + std::time::Duration::from_secs(u64::from(timeout_secs.get()) + 90)
+    tokio::time::Instant::now() + std::time::Duration::from_secs(u64::from(timeout_secs.get()) + 90)
 }
 
 async fn wait_for_start(
@@ -238,9 +276,11 @@ async fn wait_for_start(
         match rx.borrow_and_update().clone() {
             ContainerStatus::Running => return Ok(()),
             ContainerStatus::Error(msg) => return Err(zbus::fdo::Error::Failed(msg)),
-            ContainerStatus::Stopped => return Err(zbus::fdo::Error::Failed(
-                "container exited before reaching running state".into()
-            )),
+            ContainerStatus::Stopped => {
+                return Err(zbus::fdo::Error::Failed(
+                    "container exited before reaching running state".into(),
+                ))
+            }
             _ => {}
         }
         tokio::select! {
@@ -267,6 +307,33 @@ async fn wait_for_start(
 #[interface(name = "org.enclo.Manager")]
 impl Manager {
     async fn start(&self, name: String, config_path: String) -> zbus::fdo::Result<()> {
+        if std::path::Path::new(&config_path)
+            .file_name()
+            .is_some_and(|n| n == ".enclo.toml")
+        {
+            let (config, ctx) = self
+                .load(&name, Some(&config_path))
+                .await
+                .map_err(|e| zbus::fdo::Error::Failed(format!("{e:#}")))?;
+            if self
+                .entry_snapshot(&name)
+                .await
+                .is_some_and(|(status, _, _)| status == ContainerStatus::Running)
+            {
+                let fingerprint =
+                    std::fs::read_to_string(ctx.enclo_dir.join("workspace-fingerprint"))
+                        .unwrap_or_default();
+                if config
+                    .workspace
+                    .as_ref()
+                    .is_some_and(|p| p.fingerprint != fingerprint)
+                {
+                    return Err(zbus::fdo::Error::Failed(
+                        "workspace configuration changed; run enclo restart".into(),
+                    ));
+                }
+            }
+        }
         // If already running or starting, subscribe to the existing watch and wait.
         let existing_rx = self.entry_snapshot(&name).await;
 
@@ -274,8 +341,13 @@ impl Manager {
             Some((ContainerStatus::Running, _, _)) => return Ok(()),
             Some((ContainerStatus::Starting, rx, deadline)) => (rx, deadline),
             Some(_) | None => {
-                let path = if config_path.is_empty() { None } else { Some(config_path.as_str()) };
-                self.spawn_start(name.clone(), path).await
+                let path = if config_path.is_empty() {
+                    None
+                } else {
+                    Some(config_path.as_str())
+                };
+                self.spawn_start(name.clone(), path)
+                    .await
                     .map_err(|e| zbus::fdo::Error::Failed(format!("{:#}", e)))?
             }
         };
@@ -286,7 +358,9 @@ impl Manager {
     async fn check_user_sessions(&self, name: &str) -> zbus::fdo::Result<()> {
         let all_enabled = {
             let guard = self.inner.lock().await;
-            guard.containers.get(name)
+            guard
+                .containers
+                .get(name)
                 .map(|e| e.all_enabled.clone())
                 .unwrap_or_default()
         };
@@ -296,7 +370,9 @@ impl Manager {
             managed.extend(module.module_status().await.managed_exec_ids);
         }
 
-        let container_name = self.resolve_container_name(name).await
+        let container_name = self
+            .resolve_container_name(name)
+            .await
             .map_err(|e| zbus::fdo::Error::Failed(format!("{:#}", e)))?;
 
         let user_sessions = crate::podman::user_exec_sessions(&container_name, &managed)
@@ -319,12 +395,15 @@ impl Manager {
             self.check_user_sessions(&name).await?;
         }
 
-        let container_name = self.resolve_container_name(&name).await
+        let container_name = self
+            .resolve_container_name(&name)
+            .await
             .map_err(|e| zbus::fdo::Error::Failed(format!("{:#}", e)))?;
 
         self.send_status(&name, ContainerStatus::Stopping).await;
 
-        crate::podman::stop(&container_name).await
+        crate::podman::stop(&container_name)
+            .await
             .map_err(|e| zbus::fdo::Error::Failed(format!("{:#}", e)))
     }
 
@@ -339,21 +418,31 @@ impl Manager {
 
     async fn list_containers(&self) -> zbus::fdo::Result<Vec<(String, String)>> {
         let guard = self.inner.lock().await;
-        Ok(guard.containers.iter()
+        Ok(guard
+            .containers
+            .iter()
             .map(|(k, v)| (k.clone(), v.status_tx.borrow().as_str().to_string()))
             .collect())
     }
 
-    async fn restart(&self, name: String, config_path: String, force: bool) -> zbus::fdo::Result<()> {
+    async fn restart(
+        &self,
+        name: String,
+        config_path: String,
+        force: bool,
+    ) -> zbus::fdo::Result<()> {
         if !force {
             self.check_user_sessions(&name).await?;
         }
 
-        let container_name = self.resolve_container_name(&name).await
+        let container_name = self
+            .resolve_container_name(&name)
+            .await
             .map_err(|e| zbus::fdo::Error::Failed(format!("{:#}", e)))?;
         self.send_status(&name, ContainerStatus::Stopping).await;
         let _ = crate::podman::stop(&container_name).await;
-        self.wait_until_removed(&name, std::time::Duration::from_secs(30)).await?;
+        self.wait_until_removed(&name, std::time::Duration::from_secs(30))
+            .await?;
 
         self.start(name, config_path).await
     }
@@ -361,16 +450,18 @@ impl Manager {
     async fn reload(&self, name: String) -> zbus::fdo::Result<()> {
         let (reloadable, ctx) = {
             let guard = self.inner.lock().await;
-            let entry = guard.containers.get(&name)
-                .ok_or_else(|| zbus::fdo::Error::Failed(
-                    format!("container '{}' is not running", name)
-                ))?;
+            let entry = guard.containers.get(&name).ok_or_else(|| {
+                zbus::fdo::Error::Failed(format!("container '{}' is not running", name))
+            })?;
             (entry.reloadable.clone(), entry.ctx.clone())
         };
 
         let module_timestamps = {
             let guard = self.inner.lock().await;
-            guard.containers.get(&name).map(|e| Arc::clone(&e.module_timestamps))
+            guard
+                .containers
+                .get(&name)
+                .map(|e| Arc::clone(&e.module_timestamps))
         };
 
         let mut errors: Vec<String> = Vec::new();
@@ -378,7 +469,9 @@ impl Manager {
             match module.reload(&ctx).await {
                 Ok(()) => {
                     if let Some(ts) = &module_timestamps {
-                        ts.lock().await.insert(module.name().to_string(), SystemTime::now());
+                        ts.lock()
+                            .await
+                            .insert(module.name().to_string(), SystemTime::now());
                     }
                 }
                 Err(e) => {
@@ -397,11 +490,13 @@ impl Manager {
     async fn module_statuses(&self, name: String) -> zbus::fdo::Result<Vec<(String, String, i64)>> {
         let (all_enabled, module_timestamps) = {
             let guard = self.inner.lock().await;
-            let entry = guard.containers.get(&name)
-                .ok_or_else(|| zbus::fdo::Error::Failed(
-                    format!("container '{}' is not running", name)
-                ))?;
-            (entry.all_enabled.clone(), Arc::clone(&entry.module_timestamps))
+            let entry = guard.containers.get(&name).ok_or_else(|| {
+                zbus::fdo::Error::Failed(format!("container '{}' is not running", name))
+            })?;
+            (
+                entry.all_enabled.clone(),
+                Arc::clone(&entry.module_timestamps),
+            )
         };
 
         let timestamps = module_timestamps.lock().await;
@@ -409,11 +504,12 @@ impl Manager {
         for module in &all_enabled {
             let status = module.module_status().await;
             let process_str = match status.process_alive {
-                Some(true)  => "running".to_string(),
+                Some(true) => "running".to_string(),
                 Some(false) => "exited".to_string(),
-                None        => String::new(),
+                None => String::new(),
             };
-            let secs = timestamps.get(module.name())
+            let secs = timestamps
+                .get(module.name())
                 .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
                 .map(|d| d.as_secs() as i64)
                 .unwrap_or(-1);
@@ -425,7 +521,9 @@ impl Manager {
     async fn user_exec_count(&self, name: String) -> zbus::fdo::Result<u32> {
         let all_enabled = {
             let guard = self.inner.lock().await;
-            guard.containers.get(&name)
+            guard
+                .containers
+                .get(&name)
                 .map(|e| e.all_enabled.clone())
                 .unwrap_or_default()
         };
@@ -435,8 +533,8 @@ impl Manager {
             managed.extend(module.module_status().await.managed_exec_ids);
         }
 
-        let ctx = Context::new(name.clone())
-            .map_err(|e| zbus::fdo::Error::Failed(format!("{:#}", e)))?;
+        let ctx =
+            Context::new(name.clone()).map_err(|e| zbus::fdo::Error::Failed(format!("{:#}", e)))?;
 
         let sessions = crate::podman::user_exec_sessions(&ctx.container_name, &managed)
             .await
@@ -446,15 +544,6 @@ impl Manager {
     }
 
     async fn ensure_running(&self, name: String, config_path: String) -> zbus::fdo::Result<()> {
-        let already_running = {
-            let guard = self.inner.lock().await;
-            guard.containers.get(&name)
-                .map(|e| *e.status_tx.borrow() == ContainerStatus::Running)
-                .unwrap_or(false)
-        };
-        if already_running {
-            return Ok(());
-        }
         self.start(name, config_path).await
     }
 }
@@ -539,9 +628,9 @@ async fn handle_connection(stream: tokio::net::UnixStream, manager: Manager) {
         Err(e) => crate::ipc::Response::error(format!("invalid request: {e}")),
     };
 
-    let _ = write_half.write_all(
-        (serde_json::to_string(&resp).unwrap_or_default() + "\n").as_bytes(),
-    ).await;
+    let _ = write_half
+        .write_all((serde_json::to_string(&resp).unwrap_or_default() + "\n").as_bytes())
+        .await;
 }
 
 #[cfg(target_os = "macos")]
@@ -555,24 +644,48 @@ async fn dispatch_request(manager: &Manager, req: crate::ipc::Request) -> crate:
         Response::error(msg)
     }
     match req {
-        Request::Start { name, config_path } =>
-            match manager.start(name, config_path).await { Ok(()) => Response::ok(), Err(err) => e(err) },
-        Request::Stop { name, force } =>
-            match manager.stop(name, force).await { Ok(()) => Response::ok(), Err(err) => e(err) },
-        Request::Status { name } =>
-            match manager.status(name).await { Ok(v) => Response::ok_value(v), Err(err) => e(err) },
-        Request::ListContainers =>
-            match manager.list_containers().await { Ok(v) => Response::ok_value(v), Err(err) => e(err) },
-        Request::Restart { name, config_path, force } =>
-            match manager.restart(name, config_path, force).await { Ok(()) => Response::ok(), Err(err) => e(err) },
-        Request::EnsureRunning { name, config_path } =>
-            match manager.ensure_running(name, config_path).await { Ok(()) => Response::ok(), Err(err) => e(err) },
-        Request::Reload { name } =>
-            match manager.reload(name).await { Ok(()) => Response::ok(), Err(err) => e(err) },
-        Request::ModuleStatuses { name } =>
-            match manager.module_statuses(name).await { Ok(v) => Response::ok_value(v), Err(err) => e(err) },
-        Request::UserExecCount { name } =>
-            match manager.user_exec_count(name).await { Ok(v) => Response::ok_value(v), Err(err) => e(err) },
+        Request::Start { name, config_path } => match manager.start(name, config_path).await {
+            Ok(()) => Response::ok(),
+            Err(err) => e(err),
+        },
+        Request::Stop { name, force } => match manager.stop(name, force).await {
+            Ok(()) => Response::ok(),
+            Err(err) => e(err),
+        },
+        Request::Status { name } => match manager.status(name).await {
+            Ok(v) => Response::ok_value(v),
+            Err(err) => e(err),
+        },
+        Request::ListContainers => match manager.list_containers().await {
+            Ok(v) => Response::ok_value(v),
+            Err(err) => e(err),
+        },
+        Request::Restart {
+            name,
+            config_path,
+            force,
+        } => match manager.restart(name, config_path, force).await {
+            Ok(()) => Response::ok(),
+            Err(err) => e(err),
+        },
+        Request::EnsureRunning { name, config_path } => {
+            match manager.ensure_running(name, config_path).await {
+                Ok(()) => Response::ok(),
+                Err(err) => e(err),
+            }
+        }
+        Request::Reload { name } => match manager.reload(name).await {
+            Ok(()) => Response::ok(),
+            Err(err) => e(err),
+        },
+        Request::ModuleStatuses { name } => match manager.module_statuses(name).await {
+            Ok(v) => Response::ok_value(v),
+            Err(err) => e(err),
+        },
+        Request::UserExecCount { name } => match manager.user_exec_count(name).await {
+            Ok(v) => Response::ok_value(v),
+            Err(err) => e(err),
+        },
     }
 }
 
@@ -613,7 +726,9 @@ mod tests {
         let deadline = startup_deadline(NonZeroU32::new(60).unwrap());
         let (tx, _rx) = watch::channel(ContainerStatus::Starting);
         tokio::time::sleep(Duration::from_secs(100)).await;
-        let error = wait_for_start("test", tx.subscribe(), deadline).await.unwrap_err();
+        let error = wait_for_start("test", tx.subscribe(), deadline)
+            .await
+            .unwrap_err();
         assert!(error.to_string().contains("timed out"));
         assert_eq!(start.elapsed(), Duration::from_secs(150));
     }
@@ -624,7 +739,9 @@ mod tests {
         let (tx, rx) = watch::channel(ContainerStatus::Running);
         wait_for_start("test", rx, deadline).await.unwrap();
         tx.send_replace(ContainerStatus::Error("startup failed".into()));
-        let error = wait_for_start("test", tx.subscribe(), deadline).await.unwrap_err();
+        let error = wait_for_start("test", tx.subscribe(), deadline)
+            .await
+            .unwrap_err();
         assert!(error.to_string().contains("startup failed"));
     }
 }

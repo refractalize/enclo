@@ -5,7 +5,7 @@ pub mod client;
 pub mod unix_client;
 
 /// Default path to the enclo-secrets Unix socket inside the container.
-pub const DEFAULT_SECRETS_SOCKET: &str = "/run/enclo/secrets.sock";
+pub const DEFAULT_SECRETS_SOCKET: &str = "/run/enclo/secrets/secrets.sock";
 
 use serde::{Deserialize, Serialize};
 

@@ -3,7 +3,7 @@
 enclo \- modular rootless container launcher
 .SH SYNOPSIS
 .B enclo
-[\fB\-c\fR \fIPATH\fR]
+[\fITARGET\fR]
 .I COMMAND
 [\fIARGS\fR...]
 .SH DESCRIPTION
@@ -20,10 +20,25 @@ Pass
 .B \-\-config
 to override the name-based lookup.
 .SH GLOBAL OPTIONS
+Target selectors are mutually exclusive and can appear before or after commands.
+Positional target names are not accepted.
+.TP
+.BR \-d ", " \-\-directory " " \fIPATH\fR
+Search this directory and its parents for .enclo.toml. Error if none is found;
+never fall back to a standalone central profile for an explicit directory.
+.TP
+.BR \-C ", " \-\-container " " \fINAME\fR
+Select the standalone central profile ~/.config/enclo/containers/<NAME>.toml.
+NAME is the profile filename stem, not the Podman container.name setting.
 .TP
 .BR \-c ", " \-\-config " " \fIPATH\fR
-Explicit path to a container config file. Overrides the default lookup at
-.IR ~/.config/enclo/containers/<NAME>.toml .
+Select an explicit configuration file, bypassing workspace discovery.
+.PP
+Without a selector, lifecycle commands discover the nearest workspace configuration,
+otherwise using the central default profile. The implicit choice is printed to
+stderr. A discovered invalid, unreadable or untrusted file fails without fallback.
+Status without a selector lists all instances. Serve accepts no target selectors;
+untrust accepts only --directory, defaulting to the current directory.
 .SH COMMANDS
 .SS serve
 Start the enclo daemon.
@@ -41,27 +56,21 @@ systemd user unit.
 Start a container directly, in the foreground, without a daemon.
 .PP
 .B enclo run
-[\fINAME\fR]
+[\fITARGET\fR]
 .PP
 Orchestrates all enabled modules, starts the container, and blocks until the
 container exits.
-.IR NAME
-defaults to
-.BR default .
 .SS start
 Ask the daemon to start a container.
 .PP
 .B enclo start
-[\fINAME\fR]
+[\fITARGET\fR]
 .PP
-.IR NAME
-defaults to
-.BR default .
 .SS stop
 Ask the daemon to stop a container.
 .PP
 .B enclo stop
-[\fINAME\fR]
+[\fITARGET\fR]
 [\fB\-\-force\fR]
 .TP
 .B \-\-force
@@ -72,32 +81,23 @@ sessions attached to the container.
 Without
 .BR \-\-force ,
 the command fails if any exec sessions are open.
-.IR NAME
-defaults to
-.BR default .
 .SS restart
 Ask the daemon to stop then start a container.
 .PP
 .B enclo restart
-[\fINAME\fR]
+[\fITARGET\fR]
 [\fB\-\-force\fR]
 .TP
 .B \-\-force
 Restart even if there are active exec sessions.
 .PP
-.IR NAME
-defaults to
-.BR default .
 .SS enter
 Enter a running container, starting it via the daemon first if necessary.
 .PP
 .B enclo enter
-[\fINAME\fR]
+[\fITARGET\fR]
 [\fB\-\-\fR \fICMD\fR [\fIARGS\fR...]]
 .PP
-.IR NAME
-defaults to
-.BR default .
 .I CMD
 defaults to the
 .B exec_shell
@@ -113,13 +113,10 @@ from the config if set.
 Exec into an already-running container without contacting the daemon.
 .PP
 .B enclo exec
-[\fINAME\fR]
+[\fITARGET\fR]
 [\fB\-\-\fR \fICMD\fR [\fIARGS\fR...]]
 .PP
 Errors if the container is not running. Does not attempt to start it.
-.IR NAME
-defaults to
-.BR default .
 .I CMD
 defaults to
 .B exec_shell
@@ -128,42 +125,35 @@ from config.
 Send SIGHUP to the modules of a running container that support hot-reload.
 .PP
 .B enclo reload
-[\fINAME\fR]
+[\fITARGET\fR]
 .PP
 Currently reloads the secrets service (re-reads store config and proxy rules).
 The container is not restarted.
-.IR NAME
-defaults to
-.BR default .
 .SS status
 Show container status.
 .PP
 .B enclo status
-[\fINAME\fR]
+[\fITARGET\fR]
 .PP
-With no
-.IR NAME ,
-lists all known containers and their states. With a name, shows detailed
+With no selector, lists all known containers and their states.
+With a selector, shows detailed
 status including module health.
 .SS setup-volume
 Create missing directories inside the home named volume with correct ownership.
 .PP
 .B enclo setup-volume
-[\fINAME\fR]
+[\fITARGET\fR]
 [\fB\-\-dry\-run\fR]
 .TP
 .B \-\-dry\-run
 Print what would be created without making any changes.
 .PP
-.IR NAME
-defaults to
-.BR default .
 .SH FILES
 .TP
 .I ~/.config/enclo/containers/<NAME>.toml
 Container config file (Linux).
 .TP
-.I ~/Library/Application Support/enclo/containers/<NAME>.toml
+.I ~/.config/enclo/containers/<NAME>.toml
 Container config file (macOS).
 .TP
 .I $XDG_RUNTIME_DIR/enclo/<name>/
@@ -177,29 +167,29 @@ Daemon socket (macOS).
 enclo serve
 
 # Start a container via the daemon
-enclo start dev
+enclo start -C dev
 
 # Open a shell in the container
-enclo enter dev
+enclo enter -C dev
 
 # Run a one-off command without starting via daemon
-enclo exec dev -- git status
+enclo exec -C dev -- git status
 
 # Reload secrets config without restarting
-enclo reload dev
+enclo reload -C dev
 
 # Check container status
 enclo status
-enclo status dev
+enclo status -C dev
 
 # Stop the container
-enclo stop dev
+enclo stop -C dev
 
 # Force-stop (ignores open exec sessions)
-enclo stop dev --force
+enclo stop -C dev --force
 
 # Run a container directly (no daemon, blocks)
-enclo run dev
+enclo run -C dev
 
 # Use an explicit config file
 enclo --config ~/my-container.toml run
@@ -216,3 +206,41 @@ Full documentation:
 and
 .I docs/commands.md
 in the enclo source tree.
+
+.SH WORKSPACE CONFIGURATION
+Without an explicit target selector, lifecycle commands search the current
+and parent directories for the nearest .enclo.toml. The file permits only
+container.from (the central profile name), container.directory (the workspace
+mount destination, default /workspace or the central profile's directory), and
+container.home.init.command_after when managed homes are enabled centrally.
+The containing directory is mounted read/write. Each workspace has a separate
+container identity and runtime services; central persistent volumes remain shared.
+.PP
+Workspace configurations require interactive approval, stored against their
+canonical directory and content hash under $XDG_STATE_HOME/enclo/trust
+(default ~/.local/state/enclo/trust). Changed files require renewed approval.
+Run enclo untrust in a workspace to revoke approval. Changed container configuration
+requires enclo restart. Status without a selector lists all instances.
+
+.SH MANAGED HOMES
+Set container.home.enabled=true in the central profile to create an empty,
+persistent named home volume per container instance. Remove existing home
+mounts before enabling it. container.home.init.command accepts a multiline
+shell script; a local config may append container.home.init.command_after.
+Local approval displays and authorizes that script.
+.PP
+Scripts run with sh -eu as the normal user after services start. Each successful
+stage is recorded separately in the home volume. Failed stages retry on the next
+launch; completed scripts do not rerun automatically when edited. The per-script
+container.home.init.timeout_secs defaults to 600.
+.PP
+Use enclo home init [TARGET] --rerun on a running instance to explicitly rerun both
+scripts. Without --rerun only pending scripts execute. Script failure stops the
+container. Home contents and completion records survive container recreation.
+
+.SH WORKSPACE NETWORKS
+Set container.workspace_network = true in a central profile or local .enclo.toml
+to create an identity-scoped bridge network before secrets setup. This overrides
+container.network. Networks persist across stops and are reused on restart.
+Workspace identities use enclo-workspace-<hash>; old enclo-project identities and
+home volumes are not automatically migrated.

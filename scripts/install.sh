@@ -58,6 +58,11 @@ if [[ "$PLATFORM" == "Linux" ]]; then
     systemctl --user daemon-reload
     systemctl --user enable enclo.service
     echo "enabled enclo.service (D-Bus activated)"
+    if systemctl --user is-active --quiet enclo.service; then
+        echo "The running daemon still uses the previous binary."
+        echo "When ready, run: systemctl --user restart enclo.service"
+        echo "Restarting the daemon stops its running containers."
+    fi
 else
     mkdir -p "${BIN_DIR}/linux"
     for binary in "${LINUX_BINARIES[@]}"; do

@@ -39,7 +39,7 @@ is required.
 .BR \-s ", " \-\-socket " " \fIPATH\fR
 Path to the enclo-secrets Unix socket.
 Default:
-.IR /run/enclo/secrets.sock .
+.IR /run/enclo/secrets/secrets.sock .
 .TP
 .BR \-c ", " \-\-config " " \fIPATH\fR
 Client config file (for group definitions).
@@ -78,7 +78,7 @@ with the fetched secrets added.
 .BR \-s ", " \-\-socket " " \fIPATH\fR
 Path to the enclo-secrets Unix socket.
 Default:
-.IR /run/enclo/secrets.sock .
+.IR /run/enclo/secrets/secrets.sock .
 .TP
 .BR \-c ", " \-\-config " " \fIPATH\fR
 Client config file.
@@ -123,7 +123,7 @@ statements.
 Cannot be combined with a command.
 .SH FILES
 .TP
-.I /run/enclo/secrets.sock
+.I /run/enclo/secrets/secrets.sock
 Default Unix socket path for the enclo-secrets service.
 .TP
 .I $XDG_CONFIG_HOME/enclo/client.toml

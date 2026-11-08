@@ -151,7 +151,7 @@ The `enclo-secrets` service sits between the container application and the secre
 ```mermaid
 flowchart TD
     app["Container App\n(enclo get / run, or proxy)"]
-    sock["/run/enclo/secrets.sock"]
+    sock["/run/enclo/secrets/secrets.sock"]
     access{"Access\ncheck"}
     cache{"Cache\nhit?"}
     confirm{"Confirm\nenabled?"}

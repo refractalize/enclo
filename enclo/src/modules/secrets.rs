@@ -8,7 +8,10 @@ use std::{
 
 use async_trait::async_trait;
 use serde::Deserialize;
-use tokio::{process::Command, sync::{Mutex, Notify}};
+use tokio::{
+    process::Command,
+    sync::{Mutex, Notify},
+};
 
 use crate::{
     config::{ProxyMode, SecretsConfig},
@@ -30,6 +33,8 @@ pub struct Secrets {
     child: ManagedChild,
     bridge_cancel: Arc<Notify>,
     bridge_exec_id: Mutex<Option<String>>,
+    pending: Mutex<Option<Command>>,
+    namespaced: Mutex<bool>,
 }
 
 impl Secrets {
@@ -40,6 +45,8 @@ impl Secrets {
             child: ManagedChild::new("enclo-secrets"),
             bridge_cancel: Arc::new(Notify::new()),
             bridge_exec_id: Mutex::new(None),
+            pending: Mutex::new(None),
+            namespaced: Mutex::new(false),
         }
     }
 }
@@ -97,8 +104,12 @@ async fn generate_password_hash(binary: &str, password: &str) -> anyhow::Result<
 
 #[async_trait]
 impl Module for Secrets {
-    fn name(&self) -> &str { "secrets" }
-    fn enabled(&self) -> bool { self.config.enabled }
+    fn name(&self) -> &str {
+        "secrets"
+    }
+    fn enabled(&self) -> bool {
+        self.config.enabled
+    }
 
     async fn setup(&self, ctx: &Context) -> anyhow::Result<ModuleOutput> {
         let config_str = self.config.config.clone().unwrap_or_else(|| {
@@ -109,25 +120,43 @@ impl Module for Secrets {
         let config_path = std::path::Path::new(&config_str);
         let config_dir = config_path.parent().unwrap_or(std::path::Path::new("."));
 
-        let raw = tokio::fs::read_to_string(config_path).await
+        let raw = tokio::fs::read_to_string(config_path)
+            .await
             .map_err(|e| anyhow::anyhow!("failed to read {}: {e}", config_str))?;
         let preview: ConfigPreview = toml::from_str(&raw)
             .map_err(|e| anyhow::anyhow!("failed to parse {}: {e}", config_str))?;
 
-        let socket_path = ctx.enclo_dir.join("secrets.sock");
+        let deferred =
+            preview.proxy.enabled && self.network != "host" && ctx.platform == Platform::Linux;
+        let socket_dir = ctx.enclo_dir.join("secrets-service");
+        let socket_path = if deferred {
+            tokio::fs::create_dir_all(&socket_dir).await?;
+            socket_dir.join("secrets.sock")
+        } else {
+            ctx.enclo_dir.join("secrets.sock")
+        };
         let binary_path = support::resolve_binary_path("enclo-secrets")?;
 
-        let (bind_ip, container_proxy_host) = if self.network == "host" {
+        let (bind_ip, container_proxy_host) = if self.network == "host" || !preview.proxy.enabled {
             (IpAddr::V4(Ipv4Addr::LOCALHOST), "127.0.0.1".to_string())
         } else {
             let gw = crate::podman::network_gateway(&self.network).await?;
-            (gw, CONTAINER_PROXY_HOST.to_string())
+            (
+                gw,
+                if deferred {
+                    gw.to_string()
+                } else {
+                    CONTAINER_PROXY_HOST.to_string()
+                },
+            )
         };
 
         let mut args = vec![
             "serve".to_string(),
-            "--socket".to_string(), socket_path.to_string_lossy().into_owned(),
-            "--config".to_string(), config_str.clone(),
+            "--socket".to_string(),
+            socket_path.to_string_lossy().into_owned(),
+            "--config".to_string(),
+            config_str.clone(),
         ];
 
         // Proxy-specific setup: generate ephemeral credentials and pass them in.
@@ -135,7 +164,12 @@ impl Module for Secrets {
             tracing::info!("generating enclo-secrets basic auth credentials");
             let pw = random_password();
             let hash = generate_password_hash(&binary_path.to_string_lossy(), &pw).await?;
-            args.extend(["--username".into(), "enclo".into(), "--password-hash".into(), hash]);
+            args.extend([
+                "--username".into(),
+                "enclo".into(),
+                "--password-hash".into(),
+                hash,
+            ]);
             Some(pw)
         } else {
             None
@@ -143,7 +177,7 @@ impl Module for Secrets {
 
         // Bind the proxy port here and hand the socket to the sidecar, so the
         // address is known up front and early connections queue in the backlog.
-        let proxy_listener = if preview.proxy.enabled {
+        let proxy_listener = if preview.proxy.enabled && !deferred {
             let listener = std::net::TcpListener::bind(SocketAddr::new(bind_ip, 0))
                 .map_err(|e| anyhow::anyhow!("failed to bind proxy listener on {bind_ip}: {e}"))?;
             args.extend(["--listen-fd".into(), listener.as_raw_fd().to_string()]);
@@ -151,9 +185,35 @@ impl Module for Secrets {
         } else {
             None
         };
-        tracing::info!("starting enclo-secrets");
-        let mut command = tokio::process::Command::new(&binary_path);
-        command.args(&args);
+        // A fixed port can be reused on distinct workspace gateway IPs. A clash
+        // on an explicitly shared network is reported before the container starts.
+        let deferred_addr = SocketAddr::new(bind_ip, 18080);
+        let rootless = deferred && crate::podman::is_rootless().await?;
+        *self.namespaced.lock().await = rootless;
+        if deferred {
+            args.extend(["--listen".into(), deferred_addr.to_string()]);
+        }
+        let mut command = if rootless {
+            let mut command = Command::new("podman");
+            // The PID is recorded outside the directory mounted into the container.
+            // Signal the service itself so Podman can reap it and release its netns
+            // reference normally, instead of killing the unshare supervisor.
+            command
+                .args([
+                    "unshare",
+                    "--rootless-netns",
+                    "sh",
+                    "-c",
+                    "echo $$ > \"$1\"; shift; exec \"$@\"",
+                    "enclo-secrets",
+                ])
+                .arg(ctx.enclo_dir.join("secrets.pid"))
+                .arg(&binary_path);
+            command
+        } else {
+            Command::new(&binary_path)
+        };
+        command.args(&args).kill_on_drop(true);
         if let Some(listener) = &proxy_listener {
             let fd = listener.as_raw_fd();
             // SAFETY: fcntl is async-signal-safe. Clearing close-on-exec in the
@@ -167,56 +227,68 @@ impl Module for Secrets {
                 });
             }
         }
-        let child = command
-            .spawn()
-            .map_err(|e| anyhow::anyhow!("failed to spawn enclo-secrets: {e}"))?;
-        self.child.store(child).await;
-        // The sidecar now owns the listener; drop this process's copy.
-        let proxy_addr = match proxy_listener {
+        let proxy_addr = match &proxy_listener {
             Some(listener) => Some(listener.local_addr()?),
+            None if deferred => Some(deferred_addr),
             None => None,
         };
-
-        // The sidecar prepares the proxy before creating its socket, so a
-        // connectable socket means both are ready; if proxy setup fails the
-        // sidecar exits and this fails straight away.
-        tracing::info!("waiting for enclo-secrets socket at {}", socket_path.display());
-        support::wait_for_unix_socket(
-            &socket_path,
-            SOCKET_POLL_ATTEMPTS,
-            std::time::Duration::from_millis(SOCKET_POLL_INTERVAL_MS),
-            "enclo-secrets",
-            Some(&self.child),
-        )
-        .await?;
+        if deferred {
+            *self.pending.lock().await = Some(command);
+        } else {
+            tracing::info!("starting enclo-secrets");
+            self.child.store(command.spawn()?).await;
+            support::wait_for_unix_socket(
+                &socket_path,
+                SOCKET_POLL_ATTEMPTS,
+                Duration::from_millis(SOCKET_POLL_INTERVAL_MS),
+                "enclo-secrets",
+                Some(&self.child),
+            )
+            .await?;
+        }
+        drop(proxy_listener);
 
         let mut out = ModuleOutput::default();
+        out.requires_container_init = deferred;
 
         match ctx.platform {
             Platform::Linux => {
                 // Mount the socket and in-container client binary directly.
-                out.volumes.push(VolumeMount::new(&socket_path, "/run/enclo/secrets.sock"));
+                if deferred {
+                    // The socket is created after container init. Mount its existing
+                    // parent directory so the later socket appears in the container.
+                    out.volumes.push(
+                        VolumeMount::new(&socket_dir, "/run/enclo/secrets").with_options("ro"),
+                    );
+                } else {
+                    out.volumes.push(VolumeMount::new(
+                        &socket_path,
+                        "/run/enclo/secrets/secrets.sock",
+                    ));
+                }
                 let container_binary = support::resolve_container_binary_path("enclo-secrets")?;
                 out.volumes.push(
-                    VolumeMount::new(&container_binary, "/usr/local/bin/enclo-secrets").with_options("ro"),
+                    VolumeMount::new(&container_binary, "/usr/local/bin/enclo-secrets")
+                        .with_options("ro"),
                 );
             }
             Platform::MacOs => {
                 // The Podman VM does not pass Unix socket mounts through; mount the
                 // bridge binary instead and let post_start tunnel the socket via podman exec.
-                let bridge_binary = support::resolve_container_binary_path("enclo-container-bridge")?;
+                let bridge_binary =
+                    support::resolve_container_binary_path("enclo-container-bridge")?;
                 out.volumes.push(
                     VolumeMount::new(&bridge_binary, BRIDGE_CONTAINER_PATH).with_options("ro"),
                 );
-                // /run is root-owned inside the container; create /run/enclo as root
+                // /run is root-owned inside the container; create /run/enclo/secrets as root
                 // and make it world-writable so the bridge (running as the container
                 // user) can create its socket there.
                 out.post_start_cmds.push(PostStartCmd {
-                    args: vec!["mkdir".into(), "-p".into(), "/run/enclo".into()],
+                    args: vec!["mkdir".into(), "-p".into(), "/run/enclo/secrets".into()],
                     user: Some("root".into()),
                 });
                 out.post_start_cmds.push(PostStartCmd {
-                    args: vec!["chmod".into(), "1777".into(), "/run/enclo".into()],
+                    args: vec!["chmod".into(), "1777".into(), "/run/enclo/secrets".into()],
                     user: Some("root".into()),
                 });
             }
@@ -224,8 +296,9 @@ impl Module for Secrets {
 
         // Proxy output: CA cert, update-ca-trust, and HTTP_PROXY env vars.
         if let Some(password) = proxy_password {
-            let tls = preview.proxy.tls
-                .ok_or_else(|| anyhow::anyhow!("proxy.tls is required when proxy.enabled = true"))?;
+            let tls = preview.proxy.tls.ok_or_else(|| {
+                anyhow::anyhow!("proxy.tls is required when proxy.enabled = true")
+            })?;
             let listen_addr = proxy_addr.expect("proxy listener is bound when proxy is enabled");
 
             let ca_cert = if tls.ca_cert.is_absolute() {
@@ -235,8 +308,11 @@ impl Module for Secrets {
             };
 
             out.volumes.push(
-                VolumeMount::new(&ca_cert, "/etc/pki/ca-trust/source/anchors/enclo-secrets-ca.pem")
-                    .with_options("ro"),
+                VolumeMount::new(
+                    &ca_cert,
+                    "/etc/pki/ca-trust/source/anchors/enclo-secrets-ca.pem",
+                )
+                .with_options("ro"),
             );
             out.post_start_cmds.push(PostStartCmd {
                 args: vec!["update-ca-trust".into()],
@@ -266,16 +342,37 @@ impl Module for Secrets {
         Ok(out)
     }
 
+    async fn activate(&self, ctx: &Context) -> anyhow::Result<()> {
+        if let Some(mut command) = self.pending.lock().await.take() {
+            tracing::info!("activating secrets proxy after container network initialization");
+            self.child.store(command.spawn()?).await;
+            support::wait_for_unix_socket(
+                &ctx.enclo_dir.join("secrets-service/secrets.sock"),
+                SOCKET_POLL_ATTEMPTS,
+                Duration::from_millis(SOCKET_POLL_INTERVAL_MS),
+                "enclo-secrets",
+                Some(&self.child),
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
     async fn post_start(&self, ctx: &Context) -> anyhow::Result<()> {
         if ctx.platform != Platform::MacOs {
             return Ok(());
         }
 
         let host_socket = ctx.enclo_dir.join("secrets.sock");
-        let container_socket = self.config.bridge_socket_path.clone()
-            .unwrap_or_else(|| "/run/enclo/secrets.sock".into());
+        let container_socket = self
+            .config
+            .bridge_socket_path
+            .clone()
+            .unwrap_or_else(|| "/run/enclo/secrets/secrets.sock".into());
 
-        let exec_ids_before = crate::podman::exec_ids(&ctx.container_name).await.unwrap_or_default();
+        let exec_ids_before = crate::podman::exec_ids(&ctx.container_name)
+            .await
+            .unwrap_or_default();
 
         tokio::spawn(bridge_loop(
             ctx.container_name.clone(),
@@ -295,8 +392,12 @@ impl Module for Secrets {
         )
         .await?;
 
-        let exec_ids_after = crate::podman::exec_ids(&ctx.container_name).await.unwrap_or_default();
-        let new_id = exec_ids_after.into_iter().find(|id| !exec_ids_before.contains(id));
+        let exec_ids_after = crate::podman::exec_ids(&ctx.container_name)
+            .await
+            .unwrap_or_default();
+        let new_id = exec_ids_after
+            .into_iter()
+            .find(|id| !exec_ids_before.contains(id));
         if let Some(id) = new_id {
             tracing::debug!("bridge exec session id: {id}");
             *self.bridge_exec_id.lock().await = Some(id);
@@ -307,23 +408,52 @@ impl Module for Secrets {
         Ok(())
     }
 
-    fn can_reload(&self) -> bool { true }
+    fn can_reload(&self) -> bool {
+        true
+    }
 
     async fn module_status(&self) -> ModuleStatus {
-        let managed_exec_ids = self.bridge_exec_id.lock().await
-            .iter().cloned().collect();
+        let managed_exec_ids = self.bridge_exec_id.lock().await.iter().cloned().collect();
         ModuleStatus {
             process_alive: self.child.process_alive().await,
             managed_exec_ids,
         }
     }
 
-    async fn reload(&self, _ctx: &Context) -> anyhow::Result<()> {
-        self.child.send_signal(libc::SIGHUP).await
+    async fn reload(&self, ctx: &Context) -> anyhow::Result<()> {
+        if *self.namespaced.lock().await {
+            signal_service(ctx, libc::SIGHUP).await
+        } else {
+            self.child.send_signal(libc::SIGHUP).await
+        }
     }
 
-    async fn teardown(&self, _ctx: &Context) -> anyhow::Result<()> {
+    async fn teardown(&self, ctx: &Context) -> anyhow::Result<()> {
         self.bridge_cancel.notify_one();
+        self.pending.lock().await.take();
+        if *self.namespaced.lock().await && self.child.process_alive().await == Some(true) {
+            // Normally the service exits first and Podman releases the namespace.
+            // On failed readiness the PID may not have been written yet; retry it.
+            for _ in 0..30 {
+                if signal_service(ctx, libc::SIGTERM).await.is_ok() {
+                    break;
+                }
+                if self.child.process_alive().await != Some(true) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            for _ in 0..30 {
+                if self.child.process_alive().await != Some(true) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            if self.child.process_alive().await == Some(true) {
+                let _ = signal_service(ctx, libc::SIGKILL).await;
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }
         self.child.kill().await
     }
 }
@@ -369,10 +499,12 @@ async fn run_bridge_once(
     let binary_str = bridge_binary.to_string_lossy();
     let mut child = Command::new("podman")
         .args([
-            "exec", "-i",
+            "exec",
+            "-i",
             container_name,
             binary_str.as_ref(),
-            "--socket", container_socket,
+            "--socket",
+            container_socket,
         ])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -383,13 +515,11 @@ async fn run_bridge_once(
     let mut child_stdin = child.stdin.take().unwrap();
     let mut child_stdout = child.stdout.take().unwrap();
 
-    let fwd_requests = tokio::spawn(async move {
-        tokio::io::copy(&mut child_stdout, &mut sock_write).await
-    });
+    let fwd_requests =
+        tokio::spawn(async move { tokio::io::copy(&mut child_stdout, &mut sock_write).await });
 
-    let fwd_responses = tokio::spawn(async move {
-        tokio::io::copy(&mut sock_read, &mut child_stdin).await
-    });
+    let fwd_responses =
+        tokio::spawn(async move { tokio::io::copy(&mut sock_read, &mut child_stdin).await });
 
     tokio::select! {
         status = child.wait() => {
@@ -406,5 +536,17 @@ async fn run_bridge_once(
         }
     }
 
+    Ok(())
+}
+
+async fn signal_service(ctx: &Context, signal: libc::c_int) -> anyhow::Result<()> {
+    let pid: i32 = tokio::fs::read_to_string(ctx.enclo_dir.join("secrets.pid"))
+        .await?
+        .trim()
+        .parse()?;
+    anyhow::ensure!(pid > 1, "invalid namespaced secrets PID");
+    if unsafe { libc::kill(pid, signal) } != 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
     Ok(())
 }

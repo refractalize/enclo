@@ -105,6 +105,17 @@ impl Orchestrator {
         let ordered = Self::sorted(&self.modules)?;
 
         reset_enclo_dir(ctx).await?;
+        if let Err(error) = crate::home::prepare(config, ctx).await {
+            notify_ready_error(ready, format!("{error:#}"));
+            cleanup(ctx).await;
+            return Err(error);
+        }
+
+        if let Err(error) = crate::network::prepare(config).await {
+            notify_ready_error(ready, format!("{error:#}"));
+            cleanup(ctx).await;
+            return Err(error);
+        }
 
         let setup = match self.setup_modules(&ordered, ctx, timestamps.as_ref()).await {
             Ok(setup) => setup,
@@ -116,6 +127,33 @@ impl Orchestrator {
             }
         };
 
+        if let Some(workspace) = &config.workspace {
+            let conflict = setup.combined.volumes.iter().find(|v| {
+                crate::workspace::overlaps(
+                    &workspace.destination,
+                    std::path::Path::new(&v.container_path),
+                )
+            });
+            let result = if let Some(volume) = conflict {
+                Err(anyhow::anyhow!(
+                    "workspace mount conflicts with module mount {:?}",
+                    volume.container_path
+                ))
+            } else {
+                tokio::fs::write(
+                    ctx.enclo_dir.join("workspace-fingerprint"),
+                    &workspace.fingerprint,
+                )
+                .await
+                .map_err(anyhow::Error::from)
+            };
+            if let Err(error) = result {
+                self.teardown_modules(ctx, &setup.active).await;
+                cleanup(ctx).await;
+                return Err(error);
+            }
+        }
+
         if let Err(error) = write_exec_env(ctx, &setup.combined.exec_env_vars).await {
             self.teardown_modules(ctx, &setup.active).await;
             cleanup(ctx).await;
@@ -123,11 +161,40 @@ impl Orchestrator {
         }
 
         let cmd = build_podman_run_args(config, ctx, &setup.combined);
-        info!("launching container: podman run {}", format_args_preview(&cmd));
+        info!(
+            "launching container: podman {} {}",
+            if setup.combined.requires_container_init {
+                "create"
+            } else {
+                "run"
+            },
+            format_args_preview(&cmd)
+        );
 
-        let mut container_proc = match podman::run(&cmd).await {
+        let launch = async {
+            if setup.combined.requires_container_init {
+                podman::create_and_init(
+                    &cmd,
+                    &ctx.container_name,
+                    u64::from(config.container.startup_timeout_secs.get()),
+                )
+                .await?;
+                for module in &setup.active {
+                    module
+                        .activate(ctx)
+                        .await
+                        .with_context(|| format!("module {} activation failed", module.name()))?;
+                }
+                podman::start_attached(&ctx.container_name).await
+            } else {
+                podman::run(&cmd).await
+            }
+        }
+        .await;
+        let mut container_proc = match launch {
             Ok(child) => child,
             Err(error) => {
+                notify_ready_error(ready, format!("{error:#}"));
                 self.teardown_modules(ctx, &setup.active).await;
                 cleanup(ctx).await;
                 return Err(error);
@@ -139,7 +206,9 @@ impl Orchestrator {
                 ctx,
                 &setup.active,
                 &setup.combined.post_start_cmds,
-                ready.is_some(),
+                ready.is_some()
+                    || config.container.home.enabled
+                    || !config.container.post_start.is_empty(),
                 u64::from(config.container.startup_timeout_secs.get()),
                 &mut container_proc,
             )
@@ -150,9 +219,60 @@ impl Orchestrator {
             return Err(error);
         }
 
+        let configured_hooks = async {
+            for hook in &config.container.post_start {
+                anyhow::ensure!(
+                    !hook.args.is_empty(),
+                    "container.post_start command cannot be empty"
+                );
+                tokio::time::timeout(
+                    std::time::Duration::from_secs(u64::from(
+                        config.container.startup_timeout_secs.get(),
+                    )),
+                    podman::exec_as(
+                        &ctx.container_name,
+                        hook.user.as_deref().unwrap_or("root"),
+                        &hook.args,
+                    ),
+                )
+                .await
+                .context("container.post_start command timed out")??;
+            }
+            Ok::<(), anyhow::Error>(())
+        }
+        .await;
+        if let Err(error) = configured_hooks {
+            let error = error.context("container.post_start command failed");
+            notify_ready_error(ready, format!("{error:#}"));
+            self.teardown_modules(ctx, &setup.active).await;
+            cleanup(ctx).await;
+            let _ = container_proc.wait().await;
+            return Err(error);
+        }
+
         for module in &setup.active {
             if let Err(error) = module.post_start(ctx).await {
                 warn!("module {} post_start error: {:#}", module.name(), error);
+            }
+        }
+
+        if let Err(error) = crate::home::initialize(config, ctx, false).await {
+            notify_ready_error(ready, format!("{error:#}"));
+            podman::stop(&ctx.container_name).await.ok();
+            let _ = container_proc.wait().await;
+            self.teardown_modules(ctx, &setup.active).await;
+            cleanup(ctx).await;
+            return Err(error);
+        }
+
+        if config.container.home.enabled {
+            if let Err(error) = tokio::fs::write(ctx.enclo_dir.join("home-ready"), "").await {
+                notify_ready_error(ready, format!("failed to record home readiness: {error}"));
+                podman::stop(&ctx.container_name).await.ok();
+                let _ = container_proc.wait().await;
+                self.teardown_modules(ctx, &setup.active).await;
+                cleanup(ctx).await;
+                return Err(error.into());
             }
         }
 
@@ -173,8 +293,10 @@ impl Orchestrator {
         Ok(())
     }
 
-
     pub async fn setup_volume(&self, config: &Config, ctx: &Context, dry_run: bool) -> Result<()> {
+        if !dry_run && config.container.home.enabled {
+            crate::home::prepare(config, ctx).await?;
+        }
         let plan = build_volume_plan(config, ctx)?;
 
         if plan.dirs.is_empty() && plan.files.is_empty() {
@@ -190,19 +312,38 @@ impl Orchestrator {
             for f in &plan.files {
                 println!("  touch  {}", f);
             }
-            println!("  (then fix any remaining root-owned entries under {})", plan.home_str);
+            println!(
+                "  (then fix any remaining root-owned entries under {})",
+                plan.home_str
+            );
             return Ok(());
         }
         let sh_cmd = build_volume_setup_command(ctx.uid, &plan);
+        let home_mount = format!(
+            "{}:{}{}",
+            plan.home_volume_name,
+            plan.home_str,
+            if config.container.home.enabled {
+                ":nocopy"
+            } else {
+                ""
+            }
+        );
         info!("setting up home volume '{}'", plan.home_volume_name);
         let status = tokio::process::Command::new("podman")
             .args([
-                "run", "--rm",
-                "--user", "root",
-                "--userns", "keep-id",
-                "--volume", &format!("{}:{}", plan.home_volume_name, plan.home_str),
+                "run",
+                "--rm",
+                "--user",
+                "root",
+                "--userns",
+                "keep-id",
+                "--volume",
+                &home_mount,
                 &config.container.image,
-                "sh", "-c", &sh_cmd,
+                "sh",
+                "-c",
+                &sh_cmd,
             ])
             .status()
             .await
@@ -234,7 +375,9 @@ impl Orchestrator {
             match module.setup(ctx).await {
                 Ok(output) => {
                     if let Some(ts) = timestamps {
-                        ts.lock().await.insert(module.name().to_string(), SystemTime::now());
+                        ts.lock()
+                            .await
+                            .insert(module.name().to_string(), SystemTime::now());
                     }
                     combined.merge(output);
                     active.push(Arc::clone(module));
@@ -289,11 +432,7 @@ impl Orchestrator {
     }
 }
 
-fn build_podman_run_args(
-    config: &Config,
-    ctx: &Context,
-    output: &ModuleOutput,
-) -> Vec<OsString> {
+fn build_podman_run_args(config: &Config, ctx: &Context, output: &ModuleOutput) -> Vec<OsString> {
     let mut args: Vec<OsString> = Vec::new();
 
     args.push("--name".into());
@@ -302,7 +441,7 @@ fn build_podman_run_args(
     args.push("--rm".into());
 
     args.push("--network".into());
-    args.push(config.container.network.clone().into());
+    args.push(crate::network::effective_name(config).into());
 
     args.push("--userns".into());
     // On macOS, Podman runs inside a VM whose user (core, UID 1000) is what
@@ -326,11 +465,19 @@ fn build_podman_run_args(
     {
         let entry = format!(
             "{}:x:{}:{}:{}:{}:/bin/sh",
-            ctx.user, ctx.uid, ctx.gid, ctx.user,
+            ctx.user,
+            ctx.uid,
+            ctx.gid,
+            ctx.user,
             ctx.home.display(),
         );
         args.push("--passwd-entry".into());
         args.push(entry.into());
+    }
+
+    if config.container.home.enabled {
+        args.push(format!("--user={}:{}", ctx.uid, ctx.gid).into());
+        args.push(format!("--env=HOME={}", ctx.home.display()).into());
     }
 
     if config.container.keep_groups {
@@ -339,6 +486,16 @@ fn build_podman_run_args(
 
     if config.container.security_label_disable {
         args.push("--security-opt=label=disable".into());
+    }
+
+    for device in &config.container.devices {
+        args.push(format!("--device={}", ctx.expand(device)).into());
+    }
+    for option in &config.container.security_opts {
+        args.push(format!("--security-opt={option}").into());
+    }
+    for env in &config.container.env {
+        args.push(format!("--env={}", ctx.expand(env)).into());
     }
 
     if let Some(tz) = &config.container.tz {
@@ -382,8 +539,16 @@ fn build_podman_run_args(
 fn split_volume<'a>(v: &'a str, ctx: &Context) -> (String, String, Option<&'a str>) {
     let parts: Vec<&str> = v.splitn(3, ':').collect();
     let host = ctx.expand(parts[0]);
-    let container = if parts.len() > 1 { ctx.expand(parts[1]) } else { host.clone() };
-    let opts = if parts.len() > 2 { Some(parts[2]) } else { None };
+    let container = if parts.len() > 1 {
+        ctx.expand(parts[1])
+    } else {
+        host.clone()
+    };
+    let opts = if parts.len() > 2 {
+        Some(parts[2])
+    } else {
+        None
+    };
     (host, container, opts)
 }
 
@@ -423,7 +588,8 @@ async fn remove_exec_env(ctx: &Context) {
 async fn reset_enclo_dir(ctx: &Context) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     if ctx.enclo_dir.exists() {
-        tokio::fs::remove_dir_all(&ctx.enclo_dir).await
+        tokio::fs::remove_dir_all(&ctx.enclo_dir)
+            .await
             .with_context(|| format!("failed to clear enclo dir {}", ctx.enclo_dir.display()))?;
     }
     tokio::fs::create_dir_all(&ctx.enclo_dir).await?;
@@ -433,11 +599,18 @@ async fn reset_enclo_dir(ctx: &Context) -> Result<()> {
 
 async fn cleanup(ctx: &Context) {
     if let Err(e) = podman::remove(&ctx.container_name).await {
-        warn!("cleanup: failed to remove container '{}': {:#}", ctx.container_name, e);
+        warn!(
+            "cleanup: failed to remove container '{}': {:#}",
+            ctx.container_name, e
+        );
     }
     if ctx.enclo_dir.exists() {
         if let Err(e) = tokio::fs::remove_dir_all(&ctx.enclo_dir).await {
-            warn!("cleanup: failed to remove enclo dir {}: {:#}", ctx.enclo_dir.display(), e);
+            warn!(
+                "cleanup: failed to remove enclo dir {}: {:#}",
+                ctx.enclo_dir.display(),
+                e
+            );
         }
     }
 }
@@ -462,7 +635,6 @@ fn notify_ready_error(ready: Option<tokio::sync::oneshot::Sender<Result<()>>>, m
     }
 }
 
-
 async fn run_post_start_cmds(container_name: &str, post_start_cmds: &[PostStartCmd]) {
     for post in post_start_cmds {
         let user = post.user.as_deref().unwrap_or("root");
@@ -475,16 +647,24 @@ async fn run_post_start_cmds(container_name: &str, post_start_cmds: &[PostStartC
 
 fn build_volume_plan(config: &Config, ctx: &Context) -> Result<VolumePlan> {
     let home_str = ctx.home.to_string_lossy().into_owned();
-    let home_volume_name = config.container.volumes.iter().find_map(|volume| {
-        let (host, container, _opts) = split_volume(volume, ctx);
-        if container == home_str {
-            Some(host)
-        } else {
-            None
-        }
-    }).ok_or_else(|| anyhow::anyhow!(
-        "no volume mapped to {} found in [container].volumes", home_str
-    ))?;
+    let home_volume_name = config
+        .container
+        .volumes
+        .iter()
+        .find_map(|volume| {
+            let (host, container, _opts) = split_volume(volume, ctx);
+            if container == home_str {
+                Some(host)
+            } else {
+                None
+            }
+        })
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "no volume mapped to {} found in [container].volumes",
+                home_str
+            )
+        })?;
 
     if home_volume_name.starts_with('/') || home_volume_name.starts_with('.') {
         anyhow::bail!(
@@ -544,11 +724,21 @@ fn dedupe_sorted(mut values: Vec<String>) -> Vec<String> {
 fn build_volume_setup_command(uid: u32, plan: &VolumePlan) -> String {
     let mut sh_parts = Vec::new();
     if !plan.dirs.is_empty() {
-        let args = plan.dirs.iter().map(|dir| shell_quote(dir)).collect::<Vec<_>>().join(" ");
+        let args = plan
+            .dirs
+            .iter()
+            .map(|dir| shell_quote(dir))
+            .collect::<Vec<_>>()
+            .join(" ");
         sh_parts.push(format!("mkdir -p {}", args));
     }
     if !plan.files.is_empty() {
-        let args = plan.files.iter().map(|file| shell_quote(file)).collect::<Vec<_>>().join(" ");
+        let args = plan
+            .files
+            .iter()
+            .map(|file| shell_quote(file))
+            .collect::<Vec<_>>()
+            .join(" ");
         sh_parts.push(format!("touch {}", args));
     }
 
@@ -561,7 +751,9 @@ fn build_volume_setup_command(uid: u32, plan: &VolumePlan) -> String {
     sh_parts.push(format!("chown {}:{} {}", uid, uid, explicit.join(" ")));
     sh_parts.push(format!(
         "find {} -uid 0 -exec chown {}:{} {{}} +",
-        shell_quote(&plan.home_str), uid, uid
+        shell_quote(&plan.home_str),
+        uid,
+        uid
     ));
 
     sh_parts.join(" && ")

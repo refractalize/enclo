@@ -21,6 +21,33 @@ At least one of `secrets.socket` or `proxy` must be enabled.
 
 ---
 
+## Container networking and proxy startup
+
+On Linux, host networking keeps the proxy on host localhost with an automatically
+allocated port. With `workspace_network = true` or an existing named bridge
+network, Enclo prepares the proxy configuration, creates the real container, and
+runs `podman init` to activate its network before starting the proxy. The container
+command starts only after the secrets service and proxy report readiness.
+
+For rootless Podman, the service runs through
+`podman unshare --rootless-netns` so it can bind the bridge gateway. Rootful Linux
+uses the same staged startup with the service in the host namespace. The proxy URL
+uses the actual gateway IP and port 18080. Each workspace network has a distinct
+gateway, allowing that port to be reused. Multiple proxies on the same explicitly
+shared network can conflict on that port; use separate workspace networks.
+Non-host networking modes such as `pasta`, `slirp4netns`, `none`, and `private` are
+not supported by this gateway-based integration.
+
+The secrets Unix socket is exposed at `/run/enclo/secrets/secrets.sock` through a
+read-only directory mount at `/run/enclo/secrets`, allowing it to appear after
+container initialization. The parent `/run/enclo` stays writable for modules such
+as terminfo. Rebuild and install the container client and AWS credentials helper
+alongside Enclo so their default socket path matches. Failed creation, initialization, or
+proxy activation tears down services and removes the prepared container. The
+managed network remains available for retry. Rootless reload and shutdown signal
+the service itself, allowing the Podman namespace supervisor to exit normally.
+This staged path is Linux-specific; macOS retains its existing integration.
+
 ## `[store]`
 
 Configures the layered secret fetching pipeline. Requests first resolve a route, then flow through that route's cache → global confirmation → backend.
@@ -290,7 +317,7 @@ auth = { type = "basic", username = "git", secret = "GITHUB_TOKEN" }
 auth = { type = "header", name = "X-Api-Key", secret = "API_KEY" }
 ```
 
-The proxy reloads its rules on `SIGHUP` (triggered by `enclo reload <name>`).
+The proxy reloads its rules on `SIGHUP` (triggered by `enclo reload -C <name>`).
 
 ---
 

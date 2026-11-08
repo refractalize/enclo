@@ -1,5 +1,5 @@
-use std::{ffi::OsString, net::IpAddr};
 use anyhow::{Context, Result};
+use std::{ffi::OsString, net::IpAddr};
 use tokio::process::Command;
 use tracing::debug;
 
@@ -32,7 +32,11 @@ where
             anyhow::bail!("container {} exited before becoming ready", container);
         }
         if tokio::time::Instant::now() >= deadline {
-            anyhow::bail!("container {} did not reach running state within {}s", container, timeout_secs);
+            anyhow::bail!(
+                "container {} did not reach running state within {}s",
+                container,
+                timeout_secs
+            );
         }
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     }
@@ -86,11 +90,19 @@ pub async fn exec(
     Ok(())
 }
 
-pub async fn exec_as_with_stdin(container: &str, user: &str, args: &[&str], stdin_data: Vec<u8>) -> Result<()> {
+pub async fn exec_as_with_stdin(
+    container: &str,
+    user: &str,
+    args: &[&str],
+    stdin_data: Vec<u8>,
+) -> Result<()> {
     use std::process::Stdio;
     use tokio::io::AsyncWriteExt;
 
-    debug!("podman exec --user {} {} {:?} (with stdin)", user, container, args);
+    debug!(
+        "podman exec --user {} {} {:?} (with stdin)",
+        user, container, args
+    );
     let mut child = Command::new("podman")
         .arg("exec")
         .arg("--interactive")
@@ -105,7 +117,10 @@ pub async fn exec_as_with_stdin(container: &str, user: &str, args: &[&str], stdi
         stdin.write_all(&stdin_data).await?;
     }
 
-    let status = child.wait().await.context("failed to wait for podman exec")?;
+    let status = child
+        .wait()
+        .await
+        .context("failed to wait for podman exec")?;
     if !status.success() {
         anyhow::bail!("podman exec exited with {}", status);
     }
@@ -167,7 +182,13 @@ pub async fn user_exec_sessions(container: &str, managed: &[String]) -> Result<V
 
 pub async fn network_gateway(network: &str) -> Result<IpAddr> {
     let out = Command::new("podman")
-        .args(["network", "inspect", network, "--format", "{{range .Subnets}}{{.Gateway}}{{end}}"])
+        .args([
+            "network",
+            "inspect",
+            network,
+            "--format",
+            "{{range .Subnets}}{{.Gateway}}{{end}}",
+        ])
         .output()
         .await
         .context("failed to spawn podman network inspect")?;
@@ -199,7 +220,6 @@ pub async fn container_state(container: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -208,8 +228,15 @@ mod tests {
     async fn readiness_can_take_longer_than_old_timeout() {
         let start = tokio::time::Instant::now();
         wait_running_with("test", 60, || async {
-            Ok(if start.elapsed().as_secs() >= 45 { "running" } else { "created" }.into())
-        }).await.unwrap();
+            Ok(if start.elapsed().as_secs() >= 45 {
+                "running"
+            } else {
+                "created"
+            }
+            .into())
+        })
+        .await
+        .unwrap();
         assert!(start.elapsed().as_secs() >= 45);
     }
 
@@ -217,7 +244,8 @@ mod tests {
     async fn readiness_uses_custom_timeout() {
         let start = tokio::time::Instant::now();
         let error = wait_running_with("test", 180, || async { Ok("created".into()) })
-            .await.unwrap_err();
+            .await
+            .unwrap_err();
         assert!(error.to_string().contains("within 180s"));
         assert!(start.elapsed().as_secs() >= 180);
         assert!(start.elapsed().as_secs() <= 181);
@@ -228,9 +256,65 @@ mod tests {
         for state in ["exited", "stopped"] {
             let start = tokio::time::Instant::now();
             let error = wait_running_with("test", 60, || async { Ok(state.into()) })
-                .await.unwrap_err();
+                .await
+                .unwrap_err();
             assert!(error.to_string().contains("exited before becoming ready"));
             assert!(start.elapsed().is_zero());
         }
+    }
+}
+
+/// Prepare the real container without running its command.
+pub async fn create_and_init(args: &[OsString], container: &str, timeout_secs: u64) -> Result<()> {
+    checked_command("create", args, timeout_secs).await?;
+    checked_command("init", &[container.into()], timeout_secs).await
+}
+
+async fn checked_command(operation: &str, args: &[OsString], timeout_secs: u64) -> Result<()> {
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(timeout_secs),
+        Command::new("podman")
+            .arg(operation)
+            .args(args)
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .with_context(|| format!("podman {operation} timed out"))?
+    .with_context(|| format!("failed to spawn podman {operation}"))?;
+    anyhow::ensure!(
+        output.status.success(),
+        "podman {operation} failed: {}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+    Ok(())
+}
+
+pub async fn start_attached(container: &str) -> Result<tokio::process::Child> {
+    Command::new("podman")
+        .args(["start", "--attach", container])
+        .spawn()
+        .context("failed to spawn podman start")
+}
+
+pub async fn is_rootless() -> Result<bool> {
+    let out = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        Command::new("podman")
+            .args(["info", "--format", "{{.Host.Security.Rootless}}"])
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .context("podman info timed out")??;
+    anyhow::ensure!(
+        out.status.success(),
+        "podman info failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    match String::from_utf8_lossy(&out.stdout).trim() {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        value => anyhow::bail!("unexpected Podman rootless status: {value}"),
     }
 }

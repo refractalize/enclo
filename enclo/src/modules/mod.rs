@@ -27,8 +27,8 @@ pub use terminfo::Terminfo;
 pub use wayland::Wayland;
 pub use xdg_open::XdgOpen;
 
-use std::sync::Arc;
 use crate::{config::Config, module::Module};
+use std::sync::Arc;
 
 pub fn build_registry(config: &Config) -> Vec<Arc<dyn Module>> {
     let m = &config.modules;
@@ -40,7 +40,10 @@ pub fn build_registry(config: &Config) -> Vec<Arc<dyn Module>> {
         Arc::new(SshAgent::new(m.ssh_agent.clone())),
         Arc::new(Nvidia::new(m.nvidia.clone())),
         Arc::new(ContainerClient::new(m.container_client.clone())),
-        Arc::new(Secrets::new(m.secrets.clone(), config.container.network.clone())),
+        Arc::new(Secrets::new(
+            m.secrets.clone(),
+            crate::network::effective_name(config),
+        )),
         Arc::new(AwsCredentials::new(m.aws_credentials.clone())),
         Arc::new(XdgOpen::new(m.xdg_open.clone())),
         Arc::new(Drm::new(m.drm.clone())),

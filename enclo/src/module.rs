@@ -1,9 +1,11 @@
-use std::ffi::OsString;
-use async_trait::async_trait;
 use crate::context::Context;
+use async_trait::async_trait;
+use std::ffi::OsString;
 
 #[derive(Debug, Default)]
 pub struct ModuleOutput {
+    /// Activate modules after Podman has initialized the real container network.
+    pub requires_container_init: bool,
     pub env_vars: Vec<(String, String)>,
     pub volumes: Vec<VolumeMount>,
     pub podman_args: Vec<OsString>,
@@ -13,6 +15,7 @@ pub struct ModuleOutput {
 
 impl ModuleOutput {
     pub fn merge(&mut self, other: ModuleOutput) {
+        self.requires_container_init |= other.requires_container_init;
         self.env_vars.extend(other.env_vars);
         self.volumes.extend(other.volumes);
         self.podman_args.extend(other.podman_args);
@@ -21,7 +24,8 @@ impl ModuleOutput {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PostStartCmd {
     pub args: Vec<String>,
     pub user: Option<String>,
@@ -81,11 +85,20 @@ pub trait Module: Send + Sync {
         &[]
     }
 
-    fn enabled(&self) -> bool { true }
+    fn enabled(&self) -> bool {
+        true
+    }
 
-    fn can_reload(&self) -> bool { false }
+    fn can_reload(&self) -> bool {
+        false
+    }
 
     async fn setup(&self, ctx: &Context) -> anyhow::Result<ModuleOutput>;
+
+    /// Called after container init and before its command is started.
+    async fn activate(&self, _ctx: &Context) -> anyhow::Result<()> {
+        Ok(())
+    }
 
     async fn teardown(&self, ctx: &Context) -> anyhow::Result<()> {
         let _ = ctx;
@@ -110,6 +123,9 @@ pub trait Module: Send + Sync {
     }
 
     async fn module_status(&self) -> ModuleStatus {
-        ModuleStatus { process_alive: None, managed_exec_ids: Vec::new() }
+        ModuleStatus {
+            process_alive: None,
+            managed_exec_ids: Vec::new(),
+        }
     }
 }

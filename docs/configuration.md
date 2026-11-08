@@ -2,6 +2,90 @@
 
 Container configs live at `~/.config/enclo/containers/<NAME>.toml`. Pass an explicit path with `--config <PATH>` to override the name-based lookup.
 
+## Workspace-local configuration
+
+After installing an updated binary, restart an already-running daemon with `systemctl --user restart enclo.service` before using this feature. This stops containers managed by that daemon; they can be started again afterwards. Installing the binary and running `daemon-reload` do not replace the running process.
+
+Without a target selector, Enclo searches the current directory and its parents for the nearest `.enclo.toml`. Only that file is used; parent configurations are not merged. If none exists, the central `default` profile is used. The implicit choice is printed to stderr. A discovered invalid, unreadable or untrusted file causes an error without falling back.
+
+Use `-d/--directory PATH` to search from a specific directory with no fallback if no workspace config exists. `-C/--container NAME` selects a standalone central profile by filename stem, and `-c/--config PATH` selects an explicit file. These selectors are mutually exclusive, may appear before or after commands, and replace positional target names.
+
+```toml
+[container]
+from = "default"
+workspace_network = true # optional: private bridge per instance
+directory = "/workspace" # optional
+```
+
+`from` selects a profile from `~/.config/enclo/containers/` (respecting `XDG_CONFIG_HOME`). It accepts letters, numbers, hyphens and underscores. The local file may also provide `container.home.init.command_after` when the central profile enables managed homes (see below). `container.workspace_network` may also be set locally. No other settings are allowed locally. All other configuration, including secrets and proxy settings, comes from the central profile.
+
+The directory containing `.enclo.toml` is mounted read/write at `directory`, in addition to the central mounts. The destination defaults to the central profile's `container.directory`, then `/workspace`. Destinations must be absolute and cannot overlap central mounts, module mounts or protected system paths. Host workspace paths containing `:`, `%` or newlines are unsupported.
+
+First use asks for approval in an interactive terminal, showing the selected profile and mount. Approval is bound to the canonical workspace directory and SHA-256 of the local file; editing the file or copying it into another directory requires approval again. Noninteractive commands fail for unapproved files. Approvals live under `$XDG_STATE_HOME/enclo/trust`, defaulting to `~/.local/state/enclo/trust`. Run `enclo untrust` from a workspace to revoke its approval. Central profile edits do not require renewed approval.
+
+Each workspace has a stable `enclo-workspace-<directory-hash>` container identity and separate runtime services, including proxy and secrets processes. Repeated invocations reuse that instance. Changed local or central configuration requires `enclo restart` before entering a running instance. Persistent volumes from the central profile remain shared unless a managed home is enabled as described below. Workspace home overlays are not implemented.
+
+Unnamed `run`, `start`, `enter`, `exec`, `stop`, `restart`, `reload` and `setup-volume` commands use workspace discovery. `status` without a selector still lists all instances. `-C/--container` and `-c/--config` bypass discovery. `untrust` accepts `-d/--directory` but no other target selector; `serve` accepts none. `enter` and `exec` preserve the selected directory's subdirectory under the workspace mount (`--directory` when supplied, otherwise the host current directory); `--workdir` overrides this.
+
+## Persistent instance homes and initialization
+
+Enable a private persistent home in the **central** profile:
+
+```toml
+[container.home]
+enabled = true
+
+[container.home.init]
+timeout_secs = 600 # optional; per script, must be positive
+command = '''
+set -eu
+cd "$HOME"
+
+if ! yadm rev-parse --git-dir >/dev/null 2>&1; then
+    yadm clone --no-bootstrap https://github.com/YOUR_USER/dotfiles.git
+fi
+
+yadm bootstrap
+'''
+```
+
+The image must include Git, yadm and any tools used by the scripts. TOML multiline literal strings (`'''`) preserve shell quotes and backslashes.
+
+With `enabled = true`, Enclo mounts an `enclo-home-<instance-hash>` named volume at the host user's home path inside the container (`%h`). New homes start empty, without copying files from the image, and are owned by the normal container user. The volume survives container stops, recreation and daemon restarts. Each workspace directory gets its own volume; named central containers get one per container identity. Changing a workspace's `from` does not change its home identity.
+
+Remove any existing volume mapping at `%h` (or an ancestor such as `/home`) before enabling this feature; Enclo rejects conflicting mappings. Existing shared homes are not copied or deleted. Explicit nested mounts remain in effect, and their contents may still be shared. Managed homes require `userns = "keep-id"` (the default, optionally with mapping options).
+
+A local `.enclo.toml` may append a workspace-specific script:
+
+```toml
+[container]
+from = "default"
+directory = "/workspace"
+
+[container.home.init]
+command_after = '''
+set -eu
+cd /workspace
+mise install
+'''
+```
+
+Local files cannot enable managed homes or replace the central script. The central profile must enable the feature. The approval prompt displays the local script, and the file hash covers it; approval authorizes executing it with the container's configured capabilities and secrets.
+
+Both scripts run with `sh -eu` as the normal mapped user, starting in `$HOME`, after module setup and post-start hooks. They have the container's network and module environment, including secrets and proxy access when configured. Enclo reports the instance ready only after initialization succeeds. Output goes to the daemon logs (or the terminal with `enclo run`); failures include the script output in the returned error. Each script has a separate timeout, defaulting to 600 seconds. Startup waiting accounts for initialization time separately from the Podman readiness timeout.
+
+Completion is tracked separately for the central and local scripts in the reserved `.enclo-init` directory in the home volume. Successful scripts are skipped on future starts. A failure stops the container, leaves the failed stage incomplete and retries it on the next launch; completed earlier stages are preserved. Scripts should tolerate partially completed work.
+
+Editing a completed script does not automatically rerun it. After restarting the instance to load configuration changes, explicitly run:
+
+```sh
+enclo home init --rerun
+# Or select a central profile explicitly:
+enclo home init -C default --rerun
+```
+
+This clears both completion records and runs the central script followed by the local script. Without `--rerun`, `enclo home init` runs only pending stages. The command requires an already-running, initialized instance. A failed or timed-out script stops that container; enter it again to retry. Removing the private home volume discards its files and completion records, so the next launch initializes a fresh home.
+
 ---
 
 ## `[container]`
@@ -47,6 +131,60 @@ network = "host"   # default
 
 Passed as `podman run --network=<value>`. `"host"` shares the host network stack, which is the typical choice for a development container.
 
+### `workspace_network`
+
+```toml
+workspace_network = true # default: false
+```
+
+Creates a private Podman bridge network for each container instance, including each
+workspace using a central profile. Allowed in both central and local `[container]`
+configuration; the local value overrides the central value. When enabled, it overrides
+`network`, including the default `host` value. No network name or subnet is required.
+Enclo derives `enclo-network-<identity-hash>` from the container identity and creates
+its configuration before module setup. On Linux with the secrets proxy enabled,
+Enclo uses `podman create` and `podman init` to activate the bridge, then starts the
+proxy in the appropriate network namespace before `podman start`. Host networking
+retains its existing startup behavior. See [proxy startup](secrets-configuration.md#container-networking-and-proxy-startup).
+Networks are reused across restarts and retained after stops and failed starts.
+Unused networks can be removed with `podman network rm <name>`.
+
+Workspace identities now use `enclo-workspace-<directory-hash>` instead of the old
+`enclo-project-` prefix. This also changes derived managed-home volume names;
+existing home volumes remain intact but are not automatically migrated. Stop old
+instances before upgrading; re-entering a workspace starts its new identity.
+
+### Devices, security options, environment and required setup commands
+
+Central profiles may configure `devices` (`--device`), `security_opts`
+(`--security-opt`), and `env` (`--env`, in `KEY=VALUE` format). Device paths and
+values in `env` support the usual `%h` and `%t` expansion. These settings are not
+allowed in local workspace configuration.
+
+```toml
+devices = ["/dev/fuse"]
+security_opts = ["seccomp=unconfined", "unmask=ALL"]
+env = ["XDG_RUNTIME_DIR=%t"]
+post_start = [
+  { args = ["/usr/local/bin/enclo-nested-podman-setup"], user = "root" },
+]
+```
+
+`post_start` commands run after the container is running and before module
+post-start hooks and home initialization. `user` defaults to `root`. Commands
+run in order, with the container startup timeout applied to each command. A
+failure stops/removes the container and tears down modules without reporting
+readiness. These central-profile commands are separate from module-generated
+post-start commands.
+
+The example permits a nested rootless Podman engine. It requires a full Podman
+installation and an image-provided setup helper. The helper must allocate
+subordinate IDs within the outer container's actual mappings and prepare its
+runtime directory. Disabling `modules.podman_socket` avoids connecting the local
+CLI to the host engine. `seccomp=unconfined` and `unmask=ALL` relax the outer
+container's restrictions. With inner networking configured as `host`, the inner
+containers share the workspace network namespace.
+
 ### `userns`
 
 ```toml
@@ -83,7 +221,7 @@ When `true`, passes `--security-opt=label=disable` to turn off SELinux labelling
 
 ```toml
 volumes = [
-    "%h/projects:/home/user/projects",
+    "%h/workspaces:/home/user/workspaces",
     "%h/.config/git:/home/user/.config/git:ro",
     "myvolume:/data",
 ]
@@ -113,7 +251,7 @@ The PID 1 command inside the container. The default keeps the container alive an
 ### `exec_workdir`
 
 ```toml
-exec_workdir = "%h/projects"   # optional
+exec_workdir = "%h/workspaces"   # optional
 ```
 
 The working directory for `enclo enter` and `enclo exec`. Supports `%h` and `%t` specifiers. Defaults to the current working directory on the host at the time the command is run.
@@ -173,7 +311,7 @@ proxy_mode = "explicit"
 | `enabled` | bool | `false` | Enable the secrets service |
 | `config` | string | *(required when enabled)* | Path to the `enclo-secrets` config file. Relative paths are resolved from the container config file's directory. |
 | `proxy_mode` | `"explicit"` \| `"implicit"` | `"explicit"` | How the proxy URL is exposed in the container (only relevant when `proxy.enabled = true` in the secrets config) |
-| `bridge_socket_path` | string | `"/run/enclo/secrets.sock"` | macOS only. Container path where the bridge socket is created. |
+| `bridge_socket_path` | string | `"/run/enclo/secrets/secrets.sock"` | macOS only. Container path where the bridge socket is created. |
 
 **Proxy modes:**
 
@@ -182,7 +320,7 @@ proxy_mode = "explicit"
 
 **What it injects:**
 
-- Volume: `$XDG_RUNTIME_DIR/enclo/<name>/secrets.sock` → `/run/enclo/secrets.sock`
+- Volume: `$XDG_RUNTIME_DIR/enclo/<name>/secrets.sock` → `/run/enclo/secrets/secrets.sock`
 - Volume (if proxy enabled): CA certificate → `/etc/pki/ca-trust/source/anchors/enclo-secrets-ca.pem` (read-only)
 - Post-start command (if proxy enabled): `update-ca-trust` (as root)
 - Env var (explicit mode): `ENCLO_PROXY`

@@ -5,6 +5,8 @@ use serde::Deserialize;
 pub struct Config {
     pub container: ContainerConfig,
     pub modules: ModulesConfig,
+    #[serde(skip)]
+    pub workspace: Option<crate::workspace::Workspace>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -13,11 +15,18 @@ pub struct ContainerConfig {
     #[serde(default)]
     pub name: String,
     pub image: String,
+    /// Default destination for a workspace directory.
+    pub directory: Option<String>,
+    #[serde(default)]
+    pub home: HomeConfig,
     /// Seconds to wait for Podman to report the container as running.
     #[serde(default = "default_startup_timeout_secs")]
     pub startup_timeout_secs: std::num::NonZeroU32,
     #[serde(default = "default_network")]
     pub network: String,
+    /// Create a private bridge network derived from the instance identity.
+    #[serde(default)]
+    pub workspace_network: bool,
     #[serde(default = "default_userns")]
     pub userns: String,
     #[serde(default)]
@@ -26,6 +35,15 @@ pub struct ContainerConfig {
     pub exec_shell: String,
     #[serde(default)]
     pub security_label_disable: bool,
+    #[serde(default)]
+    pub devices: Vec<String>,
+    #[serde(default)]
+    pub security_opts: Vec<String>,
+    #[serde(default)]
+    pub env: Vec<String>,
+    /// Required commands run after container start, before home initialization.
+    #[serde(default)]
+    pub post_start: Vec<crate::module::PostStartCmd>,
     /// Additional volume mounts in `host:container[:options]` format.
     /// Supports %h (home dir) and %t (XDG_RUNTIME_DIR) specifiers.
     #[serde(default)]
@@ -49,16 +67,56 @@ pub struct ContainerConfig {
     pub exec_args: Vec<String>,
 }
 
+#[derive(Debug, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct HomeConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub init: HomeInitConfig,
+    #[serde(skip)]
+    pub command_after: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HomeInitConfig {
+    pub command: Option<String>,
+    #[serde(default = "default_init_timeout")]
+    pub timeout_secs: std::num::NonZeroU32,
+}
+fn default_init_timeout() -> std::num::NonZeroU32 {
+    std::num::NonZeroU32::new(600).unwrap()
+}
+impl Default for HomeInitConfig {
+    fn default() -> Self {
+        Self {
+            command: None,
+            timeout_secs: default_init_timeout(),
+        }
+    }
+}
+
 fn default_startup_timeout_secs() -> std::num::NonZeroU32 {
     std::num::NonZeroU32::new(60).unwrap()
 }
 
-fn default_network() -> String { "host".into() }
-fn default_command() -> Vec<String> {
-    vec!["sh".into(), "-c".into(), "trap 'exit 0' TERM INT; while true; do sleep 1 & wait $!; done".into()]
+fn default_network() -> String {
+    "host".into()
 }
-fn default_userns() -> String { "keep-id".into() }
-fn default_exec_shell() -> String { "bash".into() }
+fn default_command() -> Vec<String> {
+    vec![
+        "sh".into(),
+        "-c".into(),
+        "trap 'exit 0' TERM INT; while true; do sleep 1 & wait $!; done".into(),
+    ]
+}
+fn default_userns() -> String {
+    "keep-id".into()
+}
+fn default_exec_shell() -> String {
+    "bash".into()
+}
 
 #[derive(Debug, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
@@ -116,7 +174,9 @@ impl Default for ContainerClientConfig {
     }
 }
 
-fn default_true() -> bool { true }
+fn default_true() -> bool {
+    true
+}
 
 #[derive(Debug, Deserialize, Default, Clone)]
 #[serde(deny_unknown_fields)]
@@ -145,14 +205,16 @@ pub struct DockerSocketConfig {
 
 impl Default for DockerSocketConfig {
     fn default() -> Self {
-        Self { enabled: false, socket_path: default_docker_socket_path() }
+        Self {
+            enabled: false,
+            socket_path: default_docker_socket_path(),
+        }
     }
 }
 
 fn default_docker_socket_path() -> String {
     "/var/run/docker.sock".into()
 }
-
 
 #[derive(Debug, Deserialize, Default, Clone)]
 #[serde(deny_unknown_fields)]
@@ -184,8 +246,6 @@ pub enum SshBackend {
     Gpg,
     Ssh,
 }
-
-
 
 #[derive(Debug, Deserialize, Default, Clone)]
 #[serde(deny_unknown_fields)]
@@ -219,7 +279,7 @@ pub struct SecretsConfig {
     #[serde(default)]
     pub proxy_mode: ProxyMode,
     /// Socket path inside the container for the secrets bridge (macOS only).
-    /// Defaults to /tmp/enclo-secrets.sock.
+    /// Defaults to /run/enclo/secrets/secrets.sock.
     pub bridge_socket_path: Option<String>,
 }
 
@@ -268,6 +328,9 @@ pub struct WaylandConfig {
 
 impl Config {
     pub fn load(path: &std::path::Path) -> anyhow::Result<Self> {
+        if path.file_name().is_some_and(|n| n == ".enclo.toml") {
+            return crate::workspace::load(path, false);
+        }
         let content = std::fs::read_to_string(path)
             .map_err(|e| anyhow::anyhow!("failed to read config {}: {}", path.display(), e))?;
         let mut config: Config = toml::from_str(&content)
@@ -345,9 +408,8 @@ mod tests {
     fn startup_timeout_default_and_override() {
         let default: ContainerConfig = toml::from_str("image = 'test'").unwrap();
         assert_eq!(default.startup_timeout_secs.get(), 60);
-        let custom: ContainerConfig = toml::from_str(
-            "image = 'test'\nstartup_timeout_secs = 180",
-        ).unwrap();
+        let custom: ContainerConfig =
+            toml::from_str("image = 'test'\nstartup_timeout_secs = 180").unwrap();
         assert_eq!(custom.startup_timeout_secs.get(), 180);
     }
 
@@ -355,20 +417,36 @@ mod tests {
     fn resolve_str_expands_tilde() {
         let base = std::path::Path::new("/cfg/containers");
         let home = Some(std::path::Path::new("/home/user"));
-        assert_eq!(resolve_str(base, home, "~/.config/enclo/secrets.toml"), "/home/user/.config/enclo/secrets.toml");
+        assert_eq!(
+            resolve_str(base, home, "~/.config/enclo/secrets.toml"),
+            "/home/user/.config/enclo/secrets.toml"
+        );
         assert_eq!(resolve_str(base, home, "~"), "/home/user");
-        assert_eq!(resolve_str(base, home, "secrets.toml"), "/cfg/containers/secrets.toml");
-        assert_eq!(resolve_str(base, home, "/abs/secrets.toml"), "/abs/secrets.toml");
-        assert_eq!(resolve_str(base, home, "~other/secrets.toml"), "/cfg/containers/~other/secrets.toml");
-        assert_eq!(resolve_str(base, None, "~/secrets.toml"), "/cfg/containers/~/secrets.toml");
+        assert_eq!(
+            resolve_str(base, home, "secrets.toml"),
+            "/cfg/containers/secrets.toml"
+        );
+        assert_eq!(
+            resolve_str(base, home, "/abs/secrets.toml"),
+            "/abs/secrets.toml"
+        );
+        assert_eq!(
+            resolve_str(base, home, "~other/secrets.toml"),
+            "/cfg/containers/~other/secrets.toml"
+        );
+        assert_eq!(
+            resolve_str(base, None, "~/secrets.toml"),
+            "/cfg/containers/~/secrets.toml"
+        );
     }
 
     #[test]
     fn startup_timeout_rejects_invalid_values() {
         for value in ["0", "-1", "1.5", "'60'", "4294967296"] {
-            let error = toml::from_str::<ContainerConfig>(
-                &format!("image = 'test'\nstartup_timeout_secs = {value}"),
-            ).unwrap_err();
+            let error = toml::from_str::<ContainerConfig>(&format!(
+                "image = 'test'\nstartup_timeout_secs = {value}"
+            ))
+            .unwrap_err();
             assert!(error.to_string().contains("startup_timeout_secs"));
         }
     }
