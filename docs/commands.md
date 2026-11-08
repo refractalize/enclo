@@ -4,7 +4,7 @@
 
 Without a selector, lifecycle commands discover the nearest `.enclo.toml` in the current directory or a parent, falling back to the central `default` profile if none exists. The implicit choice is printed to stderr. A discovered invalid, unreadable or untrusted file causes an error, never fallback. `enclo status` without a selector lists all instances.
 
-`enclo untrust [-d PATH]` revokes approval for the nearest workspace configuration from that directory (current directory by default). It does not stop a running container and does not accept `--container` or `--config`. `enclo serve` accepts no target selectors.
+`enclo untrust [-d PATH]` revokes approval for the nearest workspace configuration from that directory (current directory by default). It does not stop a running container and does not accept `--container` or `--config`. `enclo serve` and `enclo auth` accept no target selectors.
 
 ---
 
@@ -242,3 +242,32 @@ reused on restart. After installing the updated binary, restart the daemon with
 `systemctl --user restart enclo.service` before using it. This stops its existing
 containers. Workspace identities now use `enclo-workspace-<hash>`; existing home
 volumes under the old identity remain intact but are not automatically migrated.
+
+## `enclo auth login codex`
+
+On the host, create a separate Codex login for Enclo containers:
+
+```sh
+enclo auth login codex
+```
+
+Requires the Codex CLI on `PATH`. Enclo launches its device-authentication flow
+with a dedicated `CODEX_HOME` at `$XDG_DATA_HOME/enclo/codex`, defaulting to
+`~/.local/share/enclo/codex`. Relative `XDG_DATA_HOME` values are ignored. It forces
+`cli_auth_credentials_store="file"`, so successful credentials are saved in that
+profile's `auth.json`. An inherited `CODEX_HOME` does not change this location.
+The command runs from the dedicated profile, independently of the current
+workspace and its Codex configuration. It does not contact the Enclo daemon or
+start a container, and it rejects all target selectors.
+
+Codex displays the verification URL and device code in the terminal; complete
+sign-in in your browser. Device authentication must be enabled for your account
+or workspace. Enclo waits for Codex and reports a failed login as an error. The
+profile directory has mode 0700 and `auth.json` has mode 0600. Symlinked or
+foreign-owned profile directories and credential files are rejected. The normal
+host Codex profile is left unchanged. Rerunning the command signs in again using
+the dedicated profile.
+
+The `codex` secret backend reads and refreshes this dedicated host login. With
+the Codex proxy rule configured, run `enclo auth setup codex` once, then `enclo proxy -- codex` inside a container to use it
+without copying credentials into the container. See the [Codex authentication documentation](https://learn.chatgpt.com/docs/auth).

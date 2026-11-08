@@ -1,5 +1,8 @@
-use std::{net::SocketAddr, path::{Path, PathBuf}};
 use serde::Deserialize;
+use std::{
+    net::SocketAddr,
+    path::{Path, PathBuf},
+};
 use wildmatch::WildMatch;
 
 use crate::access::AccessConfig;
@@ -36,7 +39,10 @@ pub struct SocketSecretsConfig {
 
 impl Default for SocketSecretsConfig {
     fn default() -> Self {
-        Self { enabled: true, path: None }
+        Self {
+            enabled: true,
+            path: None,
+        }
     }
 }
 
@@ -54,7 +60,9 @@ pub struct ProxyConfig {
 
 impl ProxyConfig {
     pub fn match_rule(&self, host: &str) -> Option<&Rule> {
-        self.rules.iter().find(|r| WildMatch::new(&r.domain).matches(host))
+        self.rules
+            .iter()
+            .find(|r| WildMatch::new(&r.domain).matches(host))
     }
 }
 
@@ -82,9 +90,21 @@ pub struct Rule {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
 pub enum AuthConfig {
-    Bearer { secret: String },
-    Basic { username: String, secret: String },
-    Header { name: String, secret: String },
+    /// Atomic Codex access token and account ID, restricted to its HTTPS API.
+    Codex {
+        secret: String,
+    },
+    Bearer {
+        secret: String,
+    },
+    Basic {
+        username: String,
+        secret: String,
+    },
+    Header {
+        name: String,
+        secret: String,
+    },
 }
 
 impl Config {

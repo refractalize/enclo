@@ -1,13 +1,13 @@
-use std::sync::Arc;
 use ::http::{Request, Response, StatusCode};
-use http_body_util::{combinators::BoxBody, BodyExt};
 use bytes::Bytes;
+use http_body_util::{combinators::BoxBody, BodyExt};
 use hyper::body::Incoming;
-use hyper_util::client::legacy::{Client, connect::HttpConnector};
+use hyper_util::client::legacy::{connect::HttpConnector, Client};
+use std::sync::Arc;
 
+use super::inject;
 use crate::config::Config;
 use crate::store::StoreStack;
-use super::inject;
 
 pub type BoxResponse = Response<BoxBody<Bytes, hyper::Error>>;
 
@@ -36,7 +36,19 @@ pub async fn handle(
 
     let host_bare = host.split(':').next().unwrap_or(&host).to_string();
 
-    if let Err(e) = inject::inject(&host_bare, req.headers_mut(), &config, &store).await {
+    let path = req.uri().path().to_string();
+    let method = req.method().clone();
+    if let Err(e) = inject::inject(
+        &host_bare,
+        &path,
+        false,
+        &method,
+        req.headers_mut(),
+        &config,
+        &store,
+    )
+    .await
+    {
         return bad_gateway(&format!("credential injection failed: {e}"));
     }
 

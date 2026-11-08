@@ -1,17 +1,21 @@
-use std::os::unix::process::CommandExt;
 use crate::util;
+use std::os::unix::process::CommandExt;
 
 pub fn run(env: bool, cmd: &[String]) -> anyhow::Result<()> {
-    let proxy_url = std::env::var("ENCLO_PROXY")
-        .map_err(|_| anyhow::anyhow!("ENCLO_PROXY is not set"))?;
+    let proxy_url =
+        std::env::var("ENCLO_PROXY").map_err(|_| anyhow::anyhow!("ENCLO_PROXY is not set"))?;
 
     if proxy_url.is_empty() {
         anyhow::bail!("ENCLO_PROXY is empty");
     }
 
     if env {
-        let vars = [("HTTP_PROXY", &proxy_url), ("HTTPS_PROXY", &proxy_url),
-                    ("http_proxy", &proxy_url), ("https_proxy", &proxy_url)];
+        let vars = [
+            ("HTTP_PROXY", &proxy_url),
+            ("HTTPS_PROXY", &proxy_url),
+            ("http_proxy", &proxy_url),
+            ("https_proxy", &proxy_url),
+        ];
         for (k, v) in vars {
             println!("export {}={}", k, util::shell_quote(v));
         }
@@ -24,6 +28,8 @@ pub fn run(env: bool, cmd: &[String]) -> anyhow::Result<()> {
         .env("HTTPS_PROXY", &proxy_url)
         .env("http_proxy", &proxy_url)
         .env("https_proxy", &proxy_url)
+        .env("NO_PROXY", "")
+        .env("no_proxy", "")
         .exec();
 
     Err(anyhow::anyhow!("failed to exec '{}': {err}", cmd[0]))

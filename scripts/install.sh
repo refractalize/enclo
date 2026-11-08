@@ -16,6 +16,7 @@ BINARIES=(
     enclo-secret-store-pass
     enclo-secret-store-aws-vault
     enclo-secret-store-github
+    enclo-secret-store-codex
     enclo-secrets
     enclo-container-client
     enclo-aws-credentials

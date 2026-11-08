@@ -40,6 +40,15 @@ stderr. A discovered invalid, unreadable or untrusted file fails without fallbac
 Status without a selector lists all instances. Serve accepts no target selectors;
 untrust accepts only --directory, defaulting to the current directory.
 .SH COMMANDS
+.SS auth login codex
+Sign in to Codex on the host using a dedicated Enclo profile. Requires the Codex
+CLI on PATH. Runs device authentication interactively and forces file-based
+credential storage under $XDG_DATA_HOME/enclo/codex (default
+~/.local/share/enclo/codex). Relative XDG_DATA_HOME values are ignored.
+The directory is private (0700) and auth.json is restricted to its owner (0600).
+The normal Codex profile is unchanged. No daemon or container is required;
+target selectors are rejected. The codex secret backend uses this dedicated
+profile; run enclo auth setup codex inside the container, then enclo proxy -- codex.
 .SS serve
 Start the enclo daemon.
 .PP

@@ -171,3 +171,10 @@ Deduplication is applied: if the same secret name appears in both a positional a
 - [Secrets configuration](secrets-configuration.md)
 - [Container configuration — secrets module](configuration.md#modulessecrets)
 - `man enclo-container`
+
+## `enclo auth setup codex [--socket PATH]`
+
+Install non-secret native Codex proxy credentials in `$CODEX_HOME` (default
+`~/.codex`). Requires socket access to `CODEX_ACCOUNT_ID`. Preserves other Codex
+settings and refuses to replace an existing real login. Then run
+`enclo proxy -- codex`. See [Codex proxy setup](secrets-configuration.md#codex-through-the-secrets-proxy).

@@ -1,11 +1,12 @@
+mod codex;
 mod config;
 mod get;
 mod proxy;
 mod run;
 mod util;
 
-use std::path::PathBuf;
 use clap::{Parser, Subcommand};
+use std::path::PathBuf;
 
 use enclo_backend_protocol::DEFAULT_SECRETS_SOCKET;
 
@@ -18,6 +19,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Prepare a provider to authenticate through the host proxy
+    Auth {
+        #[command(subcommand)]
+        command: AuthCommand,
+    },
     /// Fetch one or more secrets and print them as a JSON object to stdout
     Get {
         /// Path to the enclo-secrets Unix socket
@@ -74,11 +80,35 @@ enum Command {
     },
 }
 
+#[derive(Subcommand)]
+enum AuthCommand {
+    /// Install placeholder credentials for the native Codex provider
+    Setup {
+        #[arg(value_parser = ["codex"])]
+        provider: String,
+        #[arg(long, default_value = enclo_backend_protocol::DEFAULT_SECRETS_SOCKET)]
+        socket: PathBuf,
+    },
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Command::Get { socket, config, group, names, env } => {
+        Command::Auth {
+            command:
+                AuthCommand::Setup {
+                    provider: _,
+                    socket,
+                },
+        } => codex::setup(&socket).await,
+        Command::Get {
+            socket,
+            config,
+            group,
+            names,
+            env,
+        } => {
             if names.is_empty() && group.is_empty() {
                 anyhow::bail!("at least one secret name or --group is required");
             }
@@ -86,7 +116,13 @@ async fn main() -> anyhow::Result<()> {
             let resolved = cfg.resolve(&group, &names)?;
             get::run(socket, resolved, env).await
         }
-        Command::Run { socket, config, group, names, cmd } => {
+        Command::Run {
+            socket,
+            config,
+            group,
+            names,
+            cmd,
+        } => {
             if names.is_empty() && group.is_empty() {
                 anyhow::bail!("at least one secret name or --group is required");
             }

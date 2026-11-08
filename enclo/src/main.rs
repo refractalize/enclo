@@ -1,3 +1,4 @@
+mod auth;
 mod client;
 mod config;
 mod context;
@@ -66,6 +67,11 @@ impl TargetArgs {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Manage host-side credentials dedicated to Enclo containers
+    Auth {
+        #[command(subcommand)]
+        command: AuthCommand,
+    },
     /// Forget approval for the nearest workspace configuration
     Untrust,
     /// Manage persistent container homes
@@ -144,6 +150,20 @@ enum Command {
 }
 
 #[derive(Subcommand)]
+enum AuthCommand {
+    /// Sign in to a provider using a dedicated Enclo credential profile
+    Login {
+        #[arg(value_enum)]
+        provider: AuthProvider,
+    },
+}
+
+#[derive(Clone, clap::ValueEnum)]
+enum AuthProvider {
+    Codex,
+}
+
+#[derive(Subcommand)]
 enum HomeCommand {
     /// Run pending home initialization in an already-running container
     Init {
@@ -180,6 +200,18 @@ async fn main() -> Result<()> {
     cli.target.validate()?;
 
     match cli.command {
+        Command::Auth {
+            command:
+                AuthCommand::Login {
+                    provider: AuthProvider::Codex,
+                },
+        } => {
+            anyhow::ensure!(
+                !cli.target.is_explicit(),
+                "auth commands do not accept container, config or directory selectors"
+            );
+            auth::login_codex().await
+        }
         Command::Untrust => {
             anyhow::ensure!(
                 cli.target.container.is_none() && cli.target.config.is_none(),

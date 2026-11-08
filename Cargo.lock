@@ -570,6 +570,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "clap",
+ "enclo-secret-store-codex",
  "libc",
  "rand_core",
  "serde",
@@ -624,12 +625,16 @@ name = "enclo-container-client"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64",
  "clap",
  "enclo-backend-protocol",
+ "libc",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "toml",
+ "toml_edit 0.22.27",
 ]
 
 [[package]]
@@ -639,6 +644,20 @@ dependencies = [
  "enclo-backend-protocol",
  "tokio",
  "urlencoding",
+]
+
+[[package]]
+name = "enclo-secret-store-codex"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64",
+ "enclo-backend-protocol",
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]

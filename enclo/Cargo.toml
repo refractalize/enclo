@@ -8,6 +8,7 @@ name = "enclo"
 path = "src/main.rs"
 
 [dependencies]
+enclo-secret-store-codex = { path = "../enclo-secret-store-codex" }
 anyhow = "1"
 async-trait = "0.1"
 clap = { version = "4", features = ["derive"] }

@@ -1,15 +1,15 @@
-use std::sync::Arc;
 use ::http::{Request, Response, StatusCode};
 use http_body_util::{BodyExt, Empty};
 use hyper::body::Incoming;
 use hyper_util::rt::TokioIo;
+use std::sync::Arc;
 use tokio::{net::TcpStream, sync::Mutex};
 use tokio_rustls::rustls::pki_types::ServerName;
 
+use super::plain::BoxResponse;
 use crate::config::Config;
 use crate::store::StoreStack;
 use crate::tls::TlsState;
-use super::plain::BoxResponse;
 
 pub fn accepted() -> BoxResponse {
     Response::builder()
@@ -50,7 +50,7 @@ async fn tunnel_inner(
         hyper::client::conn::http1::handshake(TokioIo::new(upstream_tls)).await?;
 
     tokio::spawn(async move {
-        if let Err(e) = upstream_conn.await {
+        if let Err(e) = upstream_conn.with_upgrades().await {
             tracing::warn!("upstream connection error: {e}");
         }
     });
@@ -68,20 +68,116 @@ async fn tunnel_inner(
                 let sender = Arc::clone(&upstream_sender);
 
                 async move {
-                    super::inject::inject(&host, req.headers_mut(), &config, &store)
-                        .await
-                        .map_err(|e| anyhow::anyhow!(e))?;
+                    let path = req.uri().path().to_string();
+                    let method = req.method().clone();
+                    super::inject::inject(
+                        &host,
+                        &path,
+                        true,
+                        &method,
+                        req.headers_mut(),
+                        &config,
+                        &store,
+                    )
+                    .await
+                    .map_err(|e| anyhow::anyhow!(e))?;
 
-                    super::strip_hop_by_hop(req.headers_mut());
-
-                    let mut s = sender.lock().await;
-                    s.ready().await.map_err(|e| anyhow::anyhow!(e))?;
-                    let resp = s.send_request(req).await.map_err(|e| anyhow::anyhow!(e))?;
+                    let resp = forward_upgrade(req, &sender).await?;
                     let (parts, body) = resp.into_parts();
                     Ok::<_, anyhow::Error>(Response::from_parts(parts, body))
                 }
             }),
         )
+        .with_upgrades()
         .await
         .map_err(|e| anyhow::anyhow!(e))
+}
+
+async fn forward_upgrade(
+    mut req: Request<Incoming>,
+    sender: &Mutex<hyper::client::conn::http1::SendRequest<Incoming>>,
+) -> anyhow::Result<Response<Incoming>> {
+    let upgrading = req
+        .headers()
+        .get("upgrade")
+        .is_some_and(|v| v.as_bytes().eq_ignore_ascii_case(b"websocket"));
+    let upgrade_header = req.headers().get("upgrade").cloned();
+    let client_upgrade = upgrading.then(|| hyper::upgrade::on(&mut req));
+    super::strip_hop_by_hop(req.headers_mut());
+    if let Some(value) = upgrade_header.filter(|_| upgrading) {
+        req.headers_mut().insert("upgrade", value);
+        req.headers_mut()
+            .insert("connection", "upgrade".parse().unwrap());
+    }
+
+    let mut s = sender.lock().await;
+    s.ready().await.map_err(|e| anyhow::anyhow!(e))?;
+    let mut resp = s.send_request(req).await.map_err(|e| anyhow::anyhow!(e))?;
+    if resp.status() == StatusCode::SWITCHING_PROTOCOLS {
+        if let Some(client_upgrade) = client_upgrade {
+            let upstream_upgrade = hyper::upgrade::on(&mut resp);
+            tokio::spawn(async move {
+                if let Ok((client, upstream)) = tokio::try_join!(client_upgrade, upstream_upgrade) {
+                    let _ = tokio::io::copy_bidirectional(
+                        &mut TokioIo::new(client),
+                        &mut TokioIo::new(upstream),
+                    )
+                    .await;
+                }
+            });
+        }
+    }
+    Ok(resp)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[tokio::test]
+    async fn websocket_upgrade_relays_bytes_in_both_directions() {
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            let (upstream, proxy_upstream) = tokio::io::duplex(8192);
+            let (mut client, proxy_client) = tokio::io::duplex(8192);
+            tokio::spawn(async move {
+                hyper::server::conn::http1::Builder::new()
+                    .serve_connection(TokioIo::new(upstream), hyper::service::service_fn(|mut req: Request<Incoming>| async move {
+                        assert_eq!(req.headers()["upgrade"], "websocket");
+                        assert_eq!(req.headers()["authorization"], "Bearer injected-token");
+                        tokio::spawn(async move {
+                            let mut io = TokioIo::new(hyper::upgrade::on(&mut req).await.unwrap());
+                            let mut bytes = [0; 4];
+                            io.read_exact(&mut bytes).await.unwrap();
+                            assert_eq!(&bytes, b"ping");
+                            io.write_all(b"pong").await.unwrap();
+                        });
+                        Ok::<_, hyper::Error>(Response::builder().status(101).header("connection", "upgrade").header("upgrade", "websocket").body(Empty::<bytes::Bytes>::new()).unwrap())
+                    })).with_upgrades().await.unwrap();
+            });
+            let (sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(proxy_upstream)).await.unwrap();
+            tokio::spawn(connection.with_upgrades());
+            let sender = Arc::new(Mutex::new(sender));
+            tokio::spawn(async move {
+                hyper::server::conn::http1::Builder::new()
+                    .serve_connection(TokioIo::new(proxy_client), hyper::service::service_fn(move |mut req: Request<Incoming>| {
+                        let sender = sender.clone();
+                        async move {
+                            req.headers_mut().insert("authorization", "Bearer injected-token".parse().unwrap());
+                            forward_upgrade(req, &sender).await
+                        }
+                    })).with_upgrades().await.unwrap();
+            });
+            client.write_all(b"GET /responses HTTP/1.1\r\nHost: example.invalid\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n").await.unwrap();
+            let mut response = Vec::new();
+            while !response.ends_with(b"\r\n\r\n") {
+                response.push(client.read_u8().await.unwrap());
+            }
+            assert!(response.starts_with(b"HTTP/1.1 101"));
+            client.write_all(b"ping").await.unwrap();
+            let mut bytes = [0; 4];
+            client.read_exact(&mut bytes).await.unwrap();
+            assert_eq!(&bytes, b"pong");
+        }).await.unwrap();
+    }
 }

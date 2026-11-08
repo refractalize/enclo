@@ -162,6 +162,7 @@ Backends are started lazily and restarted automatically (up to 10 times per 60-s
 | `pass` | `enclo-secret-store-pass` | Secret name maps to a `pass` entry path |
 | `aws-vault` | `enclo-secret-store-aws-vault` | `AWS_CREDENTIALS?profile=<profile>` |
 | `github` | `enclo-secret-store-github` | `GITHUB_TOKEN` or `GH_TOKEN` from `gh auth token` |
+| `codex` | `enclo-secret-store-codex` | `CODEX_CREDENTIALS`: proxy-only access token and account ID; `CODEX_ACCOUNT_ID`: non-secret identity for container setup |
 | `keychain` | `enclo-secret-store-keychain` | macOS Keychain (service name = secret name) |
 
 **Query parameters:** Secret names may include `?key=value` parameters (e.g. `AWS_CREDENTIALS?profile=prod`). The complete original name is forwarded to the backend. Parameter-less route patterns ignore the query string; route patterns containing query constraints match decoded parameter values as described above.
@@ -393,3 +394,71 @@ auth   = { type = "bearer", secret = "GITHUB_TOKEN" }
 domain = "github.com"
 auth   = { type = "basic", username = "git", secret = "GITHUB_TOKEN" }
 ```
+
+## Codex through the secrets proxy
+
+On the host, run `enclo auth login codex` once to create a separate ChatGPT login
+under `$XDG_DATA_HOME/enclo/codex` (default `~/.local/share/enclo/codex`). Install
+the new `enclo-secret-store-codex` binary alongside the other backends. The host
+must also have Codex available on the backend's `PATH`; for an npm/mise install,
+include the directory containing both `codex` and `node` in `[store.backends.env]`.
+
+Add the specific route **before** any catch-all route:
+
+```toml
+[[store.routes]]
+patterns = ["CODEX_CREDENTIALS", "CODEX_ACCOUNT_ID"]
+backend = "codex"
+cache = true
+idle_ttl = "1m"
+max_ttl = "1m"
+
+[[store.backends]]
+name = "codex"
+
+[[proxy.rules]]
+domain = "chatgpt.com"
+auth = { type = "codex", secret = "CODEX_CREDENTIALS" }
+```
+
+Allow `CODEX_ACCOUNT_ID` in `[secrets.access].allow`. It exposes only the account
+identifier; keep `CODEX_CREDENTIALS` denied on the socket.
+
+Inside the container, provision once after installing dotfiles:
+
+```sh
+enclo auth setup codex
+enclo proxy -- codex
+# Normal Codex arguments work:
+enclo proxy -- codex exec "Explain this repository"
+```
+
+Setup writes a private `auth.json` containing deliberately fake access/ID tokens
+and the real account ID used for workspace discovery. It selects the native
+OpenAI provider and file credential storage in `config.toml`, preserving other
+settings. It refuses to overwrite a separate login. Repeat setup after changing
+the host account. Local identity displays use a placeholder email. The fake tokens
+cannot authenticate without the host proxy. Both HTTP and WebSocket upgrades
+pass through the proxy.
+
+The `codex` auth type replaces `Authorization` and `ChatGPT-Account-ID` together
+from one credential response. Injection is restricted to HTTPS requests for
+`chatgpt.com/backend-api/codex/` and GET requests to the native workspace discovery
+and user settings endpoints (`/backend-api/wham/accounts/check` and
+`/backend-api/wham/settings/user`); other hosts, plaintext requests, encoded paths
+and paths with dot traversal segments never receive these credentials. It is
+separate from API-key authentication to `api.openai.com`.
+
+The backend keeps refresh tokens on the host. It returns only the current access
+token and account ID and uses Codex app-server's `account/read` refresh flow when
+the token expires within two minutes. All workspace providers and the login
+command share a profile lock to serialize refresh/login operations. A failure
+reports `enclo auth login codex` as the recovery action. The short cache above
+keeps cached credentials within that expiry margin; do not use the default
+one-hour cache for this route. The existing approval policy still applies.
+
+Keep `CODEX_CREDENTIALS` out of `[secrets.access].allow` when it should be used
+only by the proxy. Rebuild/install the host service, backend, and container client
+together, then restart the daemon/workspace before using this new auth type.
+The CLI RPM supplies the container-side `codex` executable; it does not replace
+the host-side Codex installation used for login and refresh.

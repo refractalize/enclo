@@ -1,0 +1,16 @@
+[package]
+name = "enclo-secret-store-codex"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+enclo-backend-protocol = { path = "../enclo-backend-protocol" }
+anyhow = "1"
+base64 = "0.22"
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-util", "io-std", "time"] }
+
+[dev-dependencies]
+tempfile = "3"

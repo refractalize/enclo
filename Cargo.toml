@@ -6,6 +6,7 @@ members = [
     "enclo-secret-store-pass",
     "enclo-secret-store-aws-vault",
     "enclo-secret-store-github",
+    "enclo-secret-store-codex",
     "enclo-secret-store-keychain",
     "enclo-secrets",
     "enclo-aws-credentials",

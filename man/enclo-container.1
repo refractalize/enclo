@@ -183,3 +183,11 @@ Full documentation:
 and
 .I docs/secrets-configuration.md
 in the enclo source tree.
+
+.SH CODEX
+.B enclo auth setup codex
+[--socket PATH]
+.PP
+Install fake native Codex credentials with the account ID from the host secrets
+socket. Refuses to overwrite a separate login. Then run enclo proxy -- codex.
+Real access and refresh tokens remain on the host.
