@@ -34,5 +34,5 @@ async fn handle(_id: u64, name: String) -> ResponseResult {
         return ResponseResult::Error { error: format!("pass returned empty value for '{name}'") };
     }
 
-    ResponseResult::Ok { value }
+    ResponseResult::Ok { value, expires_at: None }
 }

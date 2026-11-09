@@ -41,6 +41,7 @@ if a[0] == 'init':
     (root/'initialized').touch(); sys.exit(0)
 if a[0] == 'unshare':
     assert (root/'initialized').exists()
+    os.environ['INSIDE_NETNS']='1'
     os.execvp(a[2], a[2:])
 if a[0] in ['start', 'run']:
     assert (root/'service-ready').exists(), 'container started before secrets readiness'
@@ -56,23 +57,38 @@ raise SystemExit('unexpected podman command: '+str(a))
         f.script(
             "enclo-secrets",
             r#"#!/usr/bin/env python3
-import os, sys, socket, signal, json
+import os, sys, socket, signal, json, array, stat
 from pathlib import Path
 root = Path(os.environ['FIXTURE'])
 a = sys.argv[1:]
 if a[0] == 'generate-basic-auth': print('password_hash = "test"'); sys.exit(0)
+if '--store-only' in a:
+    assert not os.environ.get('INSIDE_NETNS'), 'credential service must stay on host'
+    with open(root/'events', 'a') as log: log.write(json.dumps(['host-store']+a)+'\n')
+    (root/'host-store-pid').write_text(str(os.getpid()))
+    if os.environ.get('FAIL')=='host-store':sys.exit(1)
+    path=a[a.index('--socket')+1]
+    assert 'secrets-service' not in path, 'private store socket must not be mounted'
+    sock=socket.socket(socket.AF_UNIX);sock.bind(path);os.chmod(path,0o600);sock.listen()
+    while True:
+        conn,_=sock.accept();conn.close()
+if '--store-socket' in a:
+    assert os.environ.get('INSIDE_NETNS')=='1', 'proxy egress must stay namespaced'
+    private=Path(a[a.index('--store-socket')+1])
+    assert private.exists() and stat.S_IMODE(private.stat().st_mode)==0o600
+else:
+    assert not os.environ.get('INSIDE_NETNS')
 with open(root/'events', 'a') as log: log.write(json.dumps(['service']+a)+'\n')
 (root/'service-pid').write_text(str(os.getpid()))
 if os.environ.get('FAIL') == 'activation': sys.exit(1)
 if '--listen' in a:
-    assert (root/'initialized').exists(), 'bridge proxy bound before network init'
-    addr = a[a.index('--listen')+1]
-    assert addr == '127.0.0.2:18080'
-    listener = socket.socket(); listener.bind(('127.0.0.2', 0)); listener.listen()
+    assert (root/'initialized').exists()
+    assert a[a.index('--listen')+1]=='127.0.0.2:18080'
+    listener=socket.socket();listener.bind(('127.0.0.2',18080));listener.listen()
 else:
     assert not (root/'initialized').exists(), 'host mode must retain its original lifecycle'
-    listener = socket.socket(fileno=int(a[a.index('--listen-fd')+1]))
-    assert listener.getsockname()[0] == '127.0.0.1'
+    listener=socket.socket(fileno=int(a[a.index('--listen-fd')+1]))
+    assert listener.getsockname()[0]=='127.0.0.1'
 path = a[a.index('--socket')+1]
 sock = socket.socket(socket.AF_UNIX); sock.bind(path); sock.listen()
 (root/'service-ready').touch()
@@ -146,11 +162,13 @@ enabled = false
             .collect()
     }
     fn assert_stopped(&self) {
-        if let Ok(pid) = fs::read_to_string(self.0.join("service-pid")) {
-            assert!(
-                !PathBuf::from(format!("/proc/{}", pid.trim())).exists(),
-                "secrets process leaked"
-            );
+        for file in ["service-pid", "host-store-pid"] {
+            if let Ok(pid) = fs::read_to_string(self.0.join(file)) {
+                assert!(
+                    !PathBuf::from(format!("/proc/{}", pid.trim())).exists(),
+                    "secrets process leaked: {file}"
+                );
+            }
         }
         assert!(!self.0.join("runtime/enclo/test-secrets").exists());
     }
@@ -171,6 +189,7 @@ fn bridge_activation_order_and_failures_and_host_regression() {
         ("isolated", true, "create"),
         ("isolated", true, "init"),
         ("isolated", true, "activation"),
+        ("isolated", true, "host-store"),
         ("isolated", true, "hook"),
     ] {
         let f = Fixture::new();
@@ -190,7 +209,10 @@ fn bridge_activation_order_and_failures_and_host_regression() {
             assert!(index("run").is_some());
         } else {
             assert!(index("run").is_none());
-            if failure == "create" {
+            if failure == "host-store" {
+                assert!(index("create").is_none());
+                assert!(index("init").is_none());
+            } else if failure == "create" {
                 assert!(index("init").is_none());
             } else {
                 assert!(index("create").unwrap() < index("init").unwrap());
@@ -199,6 +221,11 @@ fn bridge_activation_order_and_failures_and_host_regression() {
                 assert!(index("init").unwrap() < index("service").unwrap());
                 assert!(index("service").unwrap() < index("start").unwrap());
                 assert_eq!(index("unshare").is_some(), rootless);
+                if rootless {
+                    assert!(index("host-store").unwrap() < index("create").unwrap());
+                } else {
+                    assert!(index("host-store").is_none());
+                }
                 let create = &events[index("create").unwrap()];
                 assert!(
                     create.iter().any(|a| a.contains("@127.0.0.2:18080")),
@@ -212,7 +239,9 @@ fn bridge_activation_order_and_failures_and_host_regression() {
                 } else {
                     assert!(index("start").is_none());
                 }
-                assert!(index("rm").is_some());
+                if failure != "host-store" {
+                    assert!(index("rm").is_some());
+                }
             }
         }
         if failure.is_empty() {

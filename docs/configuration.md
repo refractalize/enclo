@@ -144,7 +144,9 @@ configuration; the local value overrides the central value. When enabled, it ove
 Enclo derives `enclo-network-<identity-hash>` from the container identity and creates
 its configuration before module setup. On Linux with the secrets proxy enabled,
 Enclo uses `podman create` and `podman init` to activate the bridge, then starts the
-proxy in the appropriate network namespace before `podman start`. Host networking
+proxy on a listener bound in the appropriate network namespace before `podman start`.
+Credential backends stay on the host; the proxy frontend and its upstream traffic
+stay in Podman’s namespace for rootless bridges. Host networking
 retains its existing startup behavior. See [proxy startup](secrets-configuration.md#container-networking-and-proxy-startup).
 Networks are reused across restarts and retained after stops and failed starts.
 Unused networks can be removed with `podman network rm <name>`.

@@ -66,7 +66,7 @@ pub async fn inject(
 
 async fn fetch(store: &Arc<StoreStack>, secret: &str) -> Result<String, String> {
     match store.get(secret).await {
-        ResponseResult::Ok { value } => Ok(value),
+        ResponseResult::Ok { value, .. } => Ok(value),
         ResponseResult::NotFound => Err(format!("secret '{secret}' not found")),
         ResponseResult::Error { error } => {
             Err(format!("error fetching secret '{secret}': {error}"))

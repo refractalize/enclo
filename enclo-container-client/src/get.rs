@@ -18,7 +18,7 @@ pub async fn fetch(socket_path: &Path, names: &[String]) -> anyhow::Result<HashM
             .ok_or_else(|| anyhow::anyhow!("response id {} out of range", resp.id))?;
 
         match resp.result {
-            ResponseResult::Ok { value } => { results.insert(name.clone(), value); }
+            ResponseResult::Ok { value, .. } => { results.insert(name.clone(), value); }
             ResponseResult::NotFound => anyhow::bail!("secret '{}' not found", name),
             ResponseResult::Error { .. } => silent_error(),
         }

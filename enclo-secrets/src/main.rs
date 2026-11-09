@@ -51,6 +51,14 @@ enum Command {
 
     /// Run the server
     Serve {
+        /// Host credential service: serve only a private, unrestricted store socket.
+        #[arg(long, requires = "socket", conflicts_with_all = ["store_socket", "listen", "listen_fd"])]
+        store_only: bool,
+
+        /// Proxy frontend: fetch credentials from this private host store socket.
+        #[arg(long, conflicts_with = "store_only")]
+        store_socket: Option<PathBuf>,
+
         /// Path to config file [default: $XDG_CONFIG_HOME/enclo-secrets/config.toml]
         #[arg(long, short = 'c')]
         config: Option<PathBuf>,
@@ -150,7 +158,7 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Command::GenerateBasicAuth { username } => cmd_generate_basic_auth(&username),
-        Command::Serve { config, socket, username, password_hash, listen, listen_fd } => {
+        Command::Serve { config, socket, username, password_hash, listen, listen_fd, store_only, store_socket } => {
             let cli_auth = match (username, password_hash) {
                 (Some(username), Some(password_hash)) => {
                     Some(config::ProxyAuthConfig { username, password_hash })
@@ -159,7 +167,7 @@ async fn main() -> anyhow::Result<()> {
             };
             let config_path = config.unwrap_or_else(default_config_path);
             let inherited = listen_fd.map(inherit_listener).transpose()?;
-            run(config_path, socket, cli_auth, listen, inherited).await
+            run(config_path, socket, cli_auth, listen, inherited, store_only, store_socket).await
         }
     }
 }
@@ -219,6 +227,8 @@ async fn run(
     cli_auth: Option<config::ProxyAuthConfig>,
     listen_override: Option<std::net::SocketAddr>,
     inherited_listener: Option<std::net::TcpListener>,
+    store_only: bool,
+    store_socket: Option<PathBuf>,
 ) -> anyhow::Result<()> {
     rustls::crypto::ring::default_provider()
         .install_default()
@@ -230,15 +240,18 @@ async fn run(
         Some(listener) => Some(listener.local_addr()?),
         None => listen_override,
     };
-    let config = config::Config::from_file_with_listen(&config_path, listen_override)
+    let config = config::Config::from_file_for_service(&config_path, listen_override, store_only)
         .map_err(|e| anyhow::anyhow!("failed to load config {}: {e}", config_path.display()))?;
 
+    if store_only {
+        server::socket::prepare_private_parent(socket_override.as_ref().expect("--store-only requires --socket"))?;
+    }
     let shutdown = Arc::new(Notify::new());
-    let store = Arc::new(
-        store::StoreStack::build(&config.store, Arc::clone(&shutdown), "enclo-secrets")
-            .await
-            .map_err(|e| anyhow::anyhow!("failed to start store: {e}"))?,
-    );
+    let store = Arc::new(match store_socket {
+        Some(path) => store::StoreStack::remote(path, Arc::clone(&shutdown)).await?,
+        None => store::StoreStack::build(&config.store, Arc::clone(&shutdown), "enclo-secrets")
+            .await.map_err(|e| anyhow::anyhow!("failed to start store: {e}"))?,
+    });
 
     let config = Arc::new(config);
     let config_state = Arc::new(RwLock::new(Arc::clone(&config)));
@@ -274,7 +287,7 @@ async fn run(
         let config_state = Arc::clone(&config_state);
         let shutdown = Arc::clone(&shutdown);
         tokio::spawn(async move {
-            if let Err(e) = server::socket::run(socket_path, store, config_state, shutdown).await {
+            if let Err(e) = server::socket::run(socket_path, store, config_state, shutdown, store_only).await {
                 tracing::error!("socket server error: {e:#}");
             }
         });
@@ -332,7 +345,7 @@ async fn run(
         loop {
             tokio::select! {
                 _ = sighup.recv() => {
-                    match config::Config::from_file_with_listen(&config_path, listen_override) {
+                    match config::Config::from_file_for_service(&config_path, listen_override, store_only) {
                         Err(e) => tracing::warn!("config reload failed: {e}"),
                         Ok(new_config) => {
                             let new_config = Arc::new(new_config);
@@ -354,11 +367,17 @@ async fn run(
         }
     }
 
+    // Reap credential processes before waiting on potentially idle client sockets.
+    store.shutdown().await;
     if let Some(listener) = active_listener {
-        draining_listeners.push(tokio::spawn(drain_listener(listener)));
+        draining_listeners.push(tokio::spawn(drain_listener_for(listener, Duration::from_secs(2))));
     }
-    for task in draining_listeners {
-        let _ = task.await;
+    // This includes listeners still draining from a previous reload. Bound the
+    // whole shutdown, not just the currently active listener.
+    if tokio::time::timeout(Duration::from_secs(2), async {
+        for task in &mut draining_listeners { let _ = task.await; }
+    }).await.is_err() {
+        for task in draining_listeners { task.abort(); }
     }
 
     Ok(())
@@ -559,13 +578,17 @@ async fn handle_http_connection(
 }
 
 async fn drain_listener(listener: ListenerHandle) {
+    drain_listener_for(listener, LISTENER_DRAIN_TIMEOUT).await;
+}
+
+async fn drain_listener_for(listener: ListenerHandle, timeout: Duration) {
     let addr = listener.state.addr;
     listener.state.stop_accepting.notify_waiters();
     let _ = listener.task.await;
-    if !drain_listener_state(&listener.state, LISTENER_DRAIN_TIMEOUT).await {
+    if !drain_listener_state(&listener.state, timeout).await {
         tracing::warn!(
             addr = %addr,
-            timeout_secs = LISTENER_DRAIN_TIMEOUT.as_secs(),
+            timeout_secs = timeout.as_secs(),
             "listener drain timed out; aborting remaining connection tasks"
         );
     }

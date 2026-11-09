@@ -61,7 +61,7 @@ pub async fn setup(socket: &Path) -> Result<()> {
         &["CODEX_ACCOUNT_ID".into()],
     ).await.context("cannot read Codex account identity; configure CODEX_ACCOUNT_ID socket access and run enclo auth login codex on the host")?;
     let account = match responses.into_iter().next().map(|r|r.result) {
-        Some(enclo_backend_protocol::ResponseResult::Ok { value }) if !value.is_empty() => value,
+        Some(enclo_backend_protocol::ResponseResult::Ok { value, .. }) if !value.is_empty() => value,
         _ => anyhow::bail!("Codex account identity unavailable; run enclo auth login codex on the host and allow CODEX_ACCOUNT_ID"),
     };
     let config = home.join("config.toml");

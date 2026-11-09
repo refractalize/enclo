@@ -23,6 +23,7 @@ pub struct StoreStack {
     runtime: RwLock<Arc<StoreRuntime>>,
     shutdown: Arc<Notify>,
     app_name: String,
+    remote: Option<std::path::PathBuf>,
 }
 
 struct StoreRuntime {
@@ -72,10 +73,26 @@ impl StoreStack {
             runtime: RwLock::new(runtime),
             shutdown,
             app_name: app_name.to_string(),
+            remote: None,
+        })
+    }
+
+    /// Proxy-only processes forward trusted store requests to a private host socket.
+    /// They never launch providers, cache secrets, or display approval dialogs.
+    pub async fn remote(path: std::path::PathBuf, shutdown: Arc<Notify>) -> anyhow::Result<Self> {
+        tokio::net::UnixStream::connect(&path).await?;
+        Ok(Self {
+            runtime: RwLock::new(Arc::new(StoreRuntime {
+                router: Router::new(Vec::new(), HashMap::new()),
+                backend_configs: HashMap::new(), confirm: None,
+                active_requests: AtomicUsize::new(0), idle_notify: Notify::new(),
+            })),
+            shutdown, app_name: "enclo-secrets-proxy".into(), remote: Some(path),
         })
     }
 
     pub async fn reload(&self, config: &StoreConfig) -> anyhow::Result<()> {
+        if self.remote.is_some() { return Ok(()); }
         let old_runtime = self.runtime.read().await.clone();
         let new_runtime = build_runtime(
             config,
@@ -106,7 +123,22 @@ impl StoreStack {
         Ok(())
     }
 
+    pub async fn shutdown(&self) {
+        let runtime = self.runtime.read().await.clone();
+        for (_, backend) in runtime.router_backends() {
+            backend.shutdown().await;
+        }
+    }
+
     pub async fn get(&self, name: &str) -> ResponseResult {
+        if let Some(path) = &self.remote {
+            return match tokio::time::timeout(Duration::from_secs(120),
+                enclo_backend_protocol::unix_client::request(path, &[name.to_string()])).await {
+                Ok(Ok(mut responses)) => responses.pop().map(|response| response.result)
+                    .unwrap_or(ResponseResult::Error { error: "host store returned no response".into() }),
+                _ => ResponseResult::Error { error: "host credential service unavailable".into() },
+            };
+        }
         tracing::info!(secret = name, "secret requested");
 
         let runtime = self.runtime.read().await.clone();
@@ -121,11 +153,11 @@ impl StoreStack {
         if let Some(cache) = &route.cache {
             if let Some(value) = cache.get(name).await {
                 tracing::debug!(secret = name, "secret served from cache");
-                return ResponseResult::Ok { value };
+                return ResponseResult::Ok { value: value.value, expires_at: value.expires_at };
             }
         }
 
-        if let Some(confirm) = &runtime.confirm {
+        if let Some(confirm) = runtime.confirm.as_ref().filter(|_| route.confirm) {
             if let Err(error) = confirm.approve(name.to_string()).await {
                 tracing::warn!(secret = name, reason = error.as_str(), "secret access denied by confirm");
                 return ResponseResult::Error { error };
@@ -134,15 +166,20 @@ impl StoreStack {
 
         tracing::info!(secret = name, backend = route.backend_name.as_str(), "fetching secret from backend");
         let result = route.backend.get(name).await;
+        if let ResponseResult::Ok { expires_at: Some(expiry), .. } = &result {
+            if *expiry <= time::OffsetDateTime::now_utc() {
+                return ResponseResult::Error { error: "backend returned an expired secret".into() };
+            }
+        }
         match &result {
             ResponseResult::NotFound => tracing::warn!(secret = name, backend = route.backend_name.as_str(), "backend reported secret not found"),
             ResponseResult::Error { error } => tracing::error!(secret = name, backend = route.backend_name.as_str(), error, "backend failed to fetch secret"),
             ResponseResult::Ok { .. } => {}
         }
 
-        if let ResponseResult::Ok { ref value } = result {
+        if let ResponseResult::Ok { ref value, expires_at } = result {
             if let Some(cache) = &route.cache {
-                cache.insert(name, value.clone()).await;
+                cache.insert(name, value.clone(), expires_at).await;
             }
         }
 

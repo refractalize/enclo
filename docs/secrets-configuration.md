@@ -29,12 +29,25 @@ network, Enclo prepares the proxy configuration, creates the real container, and
 runs `podman init` to activate its network before starting the proxy. The container
 command starts only after the secrets service and proxy report readiness.
 
-For rootless Podman, the service runs through
-`podman unshare --rootless-netns` so it can bind the bridge gateway. Rootful Linux
-uses the same staged startup with the service in the host namespace. The proxy URL
-uses the actual gateway IP and port 18080. Each workspace network has a distinct
-gateway, allowing that port to be reused. Multiple proxies on the same explicitly
-shared network can conflict on that port; use separate workspace networks.
+For rootless Podman, Enclo starts two processes. A host-only credential service
+runs with `serve --store-only --socket <private-path>` and owns the providers,
+approvals, cache, and token refresh. Its Unix socket is inside the instance's
+owner-only runtime directory, has mode 0600, and is never mounted into the
+container. This preserves access to host keyrings such as aws-vault's `keyctl`
+backend.
+
+The proxy frontend runs under `podman unshare --rootless-netns` with
+`--store-socket <private-path>`. Both incoming connections and upstream dialing
+stay in Podman's namespace; the proxy cannot use host-loopback services as
+upstreams. It forwards credential lookups to the private host socket, without
+starting providers or maintaining a second cache. The ordinary container-facing
+socket still enforces `[secrets.access]`, and never exposes the private store API.
+
+Rootful Linux uses the same staged startup and binds the listener directly on the
+host. The proxy URL uses the actual gateway IP and port 18080. Each workspace
+network has a distinct gateway, allowing that port to be reused. Multiple proxies
+on the same explicitly shared network can conflict on that port; use separate
+workspace networks.
 Non-host networking modes such as `pasta`, `slirp4netns`, `none`, and `private` are
 not supported by this gateway-based integration.
 
@@ -44,8 +57,12 @@ container initialization. The parent `/run/enclo` stays writable for modules suc
 as terminfo. Rebuild and install the container client and AWS credentials helper
 alongside Enclo so their default socket path matches. Failed creation, initialization, or
 proxy activation tears down services and removes the prepared container. The
-managed network remains available for retry. Rootless reload and shutdown signal
-the service itself, allowing the Podman namespace supervisor to exit normally.
+managed network remains available for retry. Reload signals both the host store
+and the namespaced frontend. Credential backends are stopped and reaped before
+waiting for proxy connections to drain. Shutdown drain is bounded to two seconds;
+reload retains its longer connection-drain period. Each managed service has an
+isolated process group, so the launcher's five-second forced-cleanup fallback
+also removes surviving credential subprocesses, including after a leader exits.
 This staged path is Linux-specific; macOS retains its existing integration.
 
 ## `[store]`
@@ -70,6 +87,22 @@ mlock    = false
 | `mlock` | bool | When `true`, calls `mlock()` on the cache memory pages to prevent them from being swapped to disk. Requires sufficient `RLIMIT_MEMLOCK`. Default: `false`. |
 
 Each route gets an independent cache, even when multiple routes inherit identical settings. Route-level fields override these defaults individually.
+
+A backend may include an optional RFC 3339 `expiresAt` timestamp in a successful
+response. The cache evicts at the earliest of the idle TTL, maximum TTL, and
+that expiry minus a 60-second safety margin. Hits preserve the expiry and never
+extend it. Entries already inside the margin are not cached; expired backend
+credentials are rejected. Legacy responses without expiry use the configured
+TTLs as before. Expiry metadata is also preserved on socket responses.
+
+Codex reports the access token's JWT `exp`, aws-vault reports the credential
+JSON's `Expiration`, and GitHub uses `tokenExpiresAt` from `gh auth status` when
+available for the active host/account. GitHub refresh metadata and its token are
+read from the same status snapshot; older CLI versions or unavailable status
+fall back to `gh auth token` with configured TTLs. GitHub status lookup is bounded
+to ten seconds. `pass` and macOS Keychain supply plain strings with no standard
+expiry, so they retain configured TTLs; Enclo does not guess from their contents.
+
 
 ### `[store.confirm]`
 
@@ -111,6 +144,7 @@ cache    = false
 |---|---|---|
 | `patterns` | array of strings | Wildcard patterns matching secret names and, when present in the pattern, query parameters. `*` matches any sequence of characters. |
 | `backend` | string | Name of the backend to use. Must match a `[[store.backends]]` entry. |
+| `confirm` | bool | Set to `false` to skip the global confirmation prompt for this route only. Omitted or `true` follows `[store.confirm]`. Socket access restrictions still apply. |
 | `cache` | bool | Set to `false` to disable caching for this route even when `[store.cache]` exists. Set to `true` to explicitly enable it. |
 | `idle_ttl` | duration string | Overrides the default idle TTL for this route. |
 | `max_ttl` | duration string | Overrides the default maximum TTL for this route. |
@@ -134,7 +168,7 @@ Parameter names match exactly and values support wildcard patterns. All paramete
 
 ### `[[store.backends]]`
 
-Declares backend processes. A backend is an external binary named `enclo-secret-store-<name>` looked up on `$PATH`. Each backend communicates over stdin/stdout using the length-prefixed JSON protocol.
+Declares backend processes. A backend is an external binary named `enclo-secret-store-<name>` looked up on `$PATH`. Each backend communicates over stdin/stdout using the newline-delimited JSON protocol.
 
 ```toml
 [[store.backends]]
@@ -409,9 +443,10 @@ Add the specific route **before** any catch-all route:
 [[store.routes]]
 patterns = ["CODEX_CREDENTIALS", "CODEX_ACCOUNT_ID"]
 backend = "codex"
+confirm = false
 cache = true
-idle_ttl = "1m"
-max_ttl = "1m"
+idle_ttl = "1h"
+max_ttl = "1h"
 
 [[store.backends]]
 name = "codex"
@@ -431,6 +466,17 @@ enclo auth setup codex
 enclo proxy -- codex
 # Normal Codex arguments work:
 enclo proxy -- codex exec "Explain this repository"
+```
+
+Codex may reuse a persistent app-server daemon. That daemon keeps the proxy
+environment from when it started. If it was launched without Enclo's proxy,
+starting a new TUI through the proxy can still fail during `account/read` with
+`workspace routing discovery unauthorized (401)`. Inside the container, restart
+it with the proxy environment, then launch the TUI:
+
+```sh
+enclo proxy -- codex app-server daemon restart
+enclo proxy -- codex
 ```
 
 Setup writes a private `auth.json` containing deliberately fake access/ID tokens
@@ -453,12 +499,30 @@ The backend keeps refresh tokens on the host. It returns only the current access
 token and account ID and uses Codex app-server's `account/read` refresh flow when
 the token expires within two minutes. All workspace providers and the login
 command share a profile lock to serialize refresh/login operations. A failure
-reports `enclo auth login codex` as the recovery action. The short cache above
-keeps cached credentials within that expiry margin; do not use the default
-one-hour cache for this route. The existing approval policy still applies.
+reports `enclo auth login codex` as the recovery action. The backend reports the
+actual access-token expiry, so the cache can use the one-hour limits above while
+evicting earlier when necessary. `CODEX_ACCOUNT_ID` has no token expiry and uses
+the configured limits. Other routes retain their existing approval policy;
+`confirm = false` avoids repeated Codex prompts without interfering with refresh.
 
 Keep `CODEX_CREDENTIALS` out of `[secrets.access].allow` when it should be used
 only by the proxy. Rebuild/install the host service, backend, and container client
 together, then restart the daemon/workspace before using this new auth type.
 The CLI RPM supplies the container-side `codex` executable; it does not replace
 the host-side Codex installation used for login and refresh.
+
+
+## Backend expiry response
+
+Backends can add an optional absolute expiry without changing the secret value:
+
+```json
+{"requestId": 1, "status": "ok", "value": "...", "expiresAt": "2030-01-01T00:00:00Z"}
+```
+
+Omit `expiresAt` when the provider cannot determine it. Use the earliest expiry
+for a value containing multiple credentials. Backends must take the value and
+expiry from the same credential snapshot. Invalid timestamps are protocol errors;
+unknown fields remain compatible with older consumers. New clients accept old
+responses with no timestamp. Rebuild the service and relevant backends together
+to activate expiry-aware caching; an old service ignores this metadata.

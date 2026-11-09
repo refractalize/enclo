@@ -34,6 +34,7 @@ pub struct Secrets {
     bridge_cancel: Arc<Notify>,
     bridge_exec_id: Mutex<Option<String>>,
     pending: Mutex<Option<Command>>,
+    host_store: ManagedChild,
     namespaced: Mutex<bool>,
 }
 
@@ -46,6 +47,7 @@ impl Secrets {
             bridge_cancel: Arc::new(Notify::new()),
             bridge_exec_id: Mutex::new(None),
             pending: Mutex::new(None),
+            host_store: ManagedChild::new("enclo-host-store"),
             namespaced: Mutex::new(false),
         }
     }
@@ -194,26 +196,42 @@ impl Module for Secrets {
             args.extend(["--listen".into(), deferred_addr.to_string()]);
         }
         let mut command = if rootless {
-            let mut command = Command::new("podman");
-            // The PID is recorded outside the directory mounted into the container.
-            // Signal the service itself so Podman can reap it and release its netns
-            // reference normally, instead of killing the unshare supervisor.
-            command
+            let private_socket = ctx.enclo_dir.join("host-store.sock");
+            let mut host = Command::new(&binary_path);
+            host.args(["serve", "--store-only", "--config", &config_str, "--socket"])
+                .arg(&private_socket)
+                .process_group(0)
+                .kill_on_drop(true);
+            self.host_store.store_group(host.spawn()?).await;
+            support::wait_for_unix_socket(
+                &private_socket,
+                SOCKET_POLL_ATTEMPTS,
+                Duration::from_millis(SOCKET_POLL_INTERVAL_MS),
+                "host credential service",
+                Some(&self.host_store),
+            )
+            .await?;
+            args.extend([
+                "--store-socket".into(),
+                private_socket.to_string_lossy().into_owned(),
+            ]);
+            let mut proxy = Command::new("podman");
+            proxy
                 .args([
                     "unshare",
                     "--rootless-netns",
                     "sh",
                     "-c",
                     "echo $$ > \"$1\"; shift; exec \"$@\"",
-                    "enclo-secrets",
+                    "enclo-proxy",
                 ])
                 .arg(ctx.enclo_dir.join("secrets.pid"))
                 .arg(&binary_path);
-            command
+            proxy
         } else {
             Command::new(&binary_path)
         };
-        command.args(&args).kill_on_drop(true);
+        command.args(&args).process_group(0).kill_on_drop(true);
         if let Some(listener) = &proxy_listener {
             let fd = listener.as_raw_fd();
             // SAFETY: fcntl is async-signal-safe. Clearing close-on-exec in the
@@ -236,7 +254,7 @@ impl Module for Secrets {
             *self.pending.lock().await = Some(command);
         } else {
             tracing::info!("starting enclo-secrets");
-            self.child.store(command.spawn()?).await;
+            self.child.store_group(command.spawn()?).await;
             support::wait_for_unix_socket(
                 &socket_path,
                 SOCKET_POLL_ATTEMPTS,
@@ -344,8 +362,8 @@ impl Module for Secrets {
 
     async fn activate(&self, ctx: &Context) -> anyhow::Result<()> {
         if let Some(mut command) = self.pending.lock().await.take() {
-            tracing::info!("activating secrets proxy after container network initialization");
-            self.child.store(command.spawn()?).await;
+            tracing::info!("activating namespaced proxy with host credential service");
+            self.child.store_group(command.spawn()?).await;
             support::wait_for_unix_socket(
                 &ctx.enclo_dir.join("secrets-service/secrets.sock"),
                 SOCKET_POLL_ATTEMPTS,
@@ -415,13 +433,18 @@ impl Module for Secrets {
     async fn module_status(&self) -> ModuleStatus {
         let managed_exec_ids = self.bridge_exec_id.lock().await.iter().cloned().collect();
         ModuleStatus {
-            process_alive: self.child.process_alive().await,
+            process_alive: if self.host_store.process_alive().await == Some(false) {
+                Some(false)
+            } else {
+                self.child.process_alive().await
+            },
             managed_exec_ids,
         }
     }
 
     async fn reload(&self, ctx: &Context) -> anyhow::Result<()> {
         if *self.namespaced.lock().await {
+            self.host_store.send_signal(libc::SIGHUP).await?;
             signal_service(ctx, libc::SIGHUP).await
         } else {
             self.child.send_signal(libc::SIGHUP).await
@@ -432,29 +455,11 @@ impl Module for Secrets {
         self.bridge_cancel.notify_one();
         self.pending.lock().await.take();
         if *self.namespaced.lock().await && self.child.process_alive().await == Some(true) {
-            // Normally the service exits first and Podman releases the namespace.
-            // On failed readiness the PID may not have been written yet; retry it.
-            for _ in 0..30 {
-                if signal_service(ctx, libc::SIGTERM).await.is_ok() {
-                    break;
-                }
-                if self.child.process_alive().await != Some(true) {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
-            for _ in 0..30 {
-                if self.child.process_alive().await != Some(true) {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
-            if self.child.process_alive().await == Some(true) {
-                let _ = signal_service(ctx, libc::SIGKILL).await;
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
+            let _ = signal_service(ctx, libc::SIGTERM).await;
         }
-        self.child.kill().await
+        // Stop credentials immediately; proxy connection drain cannot delay this.
+        self.host_store.stop_group(Duration::from_secs(5)).await?;
+        self.child.stop_group(Duration::from_secs(5)).await
     }
 }
 
@@ -544,7 +549,7 @@ async fn signal_service(ctx: &Context, signal: libc::c_int) -> anyhow::Result<()
         .await?
         .trim()
         .parse()?;
-    anyhow::ensure!(pid > 1, "invalid namespaced secrets PID");
+    anyhow::ensure!(pid > 1, "invalid namespaced proxy PID");
     if unsafe { libc::kill(pid, signal) } != 0 {
         return Err(std::io::Error::last_os_error().into());
     }

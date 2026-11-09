@@ -28,7 +28,7 @@ fn lookup(name: &str) -> ResponseResult {
                 if trimmed.is_empty() {
                     ResponseResult::Error { error: format!("keychain item '{name}' is empty") }
                 } else {
-                    ResponseResult::Ok { value: trimmed }
+                    ResponseResult::Ok { value: trimmed, expires_at: None }
                 }
             }
             Err(e) => ResponseResult::Error {

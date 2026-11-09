@@ -39,6 +39,8 @@ fn default_debounce_ms() -> u64 {
 #[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Route {
+    /// False bypasses global confirmation for this route only.
+    pub confirm: Option<bool>,
     pub patterns: Vec<String>,
     pub backend: String,
     pub cache: Option<bool>,

@@ -1,3 +1,4 @@
+use crate::{codec, Request, ResponseResult};
 use std::{
     collections::HashMap,
     io,
@@ -11,7 +12,6 @@ use tokio::{
     process::ChildStdin,
     sync::{oneshot, Mutex},
 };
-use crate::{codec, Request, ResponseResult};
 
 type PendingMap = Arc<Mutex<HashMap<u64, oneshot::Sender<ResponseResult>>>>;
 
@@ -35,10 +35,17 @@ impl StoreClient {
         let (tx, rx) = oneshot::channel();
         self.pending.lock().await.insert(id, tx);
 
-        let req = Request { id, name: name.to_string() };
+        let req = Request {
+            id,
+            name: name.to_string(),
+        };
         let bytes = match codec::encode(&req) {
             Ok(b) => b,
-            Err(e) => return ResponseResult::Error { error: e.to_string() },
+            Err(e) => {
+                return ResponseResult::Error {
+                    error: e.to_string(),
+                }
+            }
         };
 
         {
@@ -46,11 +53,15 @@ impl StoreClient {
             let ok = w.write_all(&bytes).await.is_ok() && w.flush().await.is_ok();
             if !ok {
                 self.pending.lock().await.remove(&id);
-                return ResponseResult::Error { error: "failed to send request to store".into() };
+                return ResponseResult::Error {
+                    error: "failed to send request to store".into(),
+                };
             }
         }
 
-        rx.await.unwrap_or(ResponseResult::Error { error: "store disconnected".into() })
+        rx.await.unwrap_or(ResponseResult::Error {
+            error: "store disconnected".into(),
+        })
     }
 }
 
@@ -62,32 +73,65 @@ pub fn spawn_reader(
         let mut buf: Vec<u8> = Vec::with_capacity(4096);
         let mut tmp = [0u8; 4096];
 
-        loop {
-            let n = stdout.read(&mut tmp).await?;
-            if n == 0 {
-                break;
-            }
-            buf.extend_from_slice(&tmp[..n]);
-
+        let result: io::Result<()> = async {
             loop {
-                match codec::decode_one::<crate::Response>(&buf)? {
-                    None => break,
-                    Some((resp, consumed)) => {
-                        buf.drain(..consumed);
-                        let mut map = pending.lock().await;
-                        if let Some(tx) = map.remove(&resp.id) {
-                            let _ = tx.send(resp.result);
+                let n = stdout.read(&mut tmp).await?;
+                if n == 0 {
+                    break;
+                }
+                buf.extend_from_slice(&tmp[..n]);
+
+                loop {
+                    match codec::decode_one::<crate::Response>(&buf)? {
+                        None => break,
+                        Some((resp, consumed)) => {
+                            buf.drain(..consumed);
+                            let mut map = pending.lock().await;
+                            if let Some(tx) = map.remove(&resp.id) {
+                                let _ = tx.send(resp.result);
+                            }
                         }
                     }
                 }
             }
+
+            Ok(())
         }
+        .await;
 
         let mut map = pending.lock().await;
         for (_, tx) in map.drain() {
-            let _ = tx.send(ResponseResult::Error { error: "store process exited".into() });
+            let _ = tx.send(ResponseResult::Error {
+                error: if result.is_err() {
+                    "invalid backend response"
+                } else {
+                    "store process exited"
+                }
+                .into(),
+            });
         }
 
-        Ok(())
+        result
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn invalid_expiry_response_releases_waiting_requests() {
+        let mut child=tokio::process::Command::new("/bin/sh")
+            .args(["-c",r#"printf '%s\n' '{"requestId":1,"status":"ok","value":"dummy","expiresAt":"invalid"}'"#])
+            .stdout(std::process::Stdio::piped()).spawn().unwrap();
+        let (tx, rx) = oneshot::channel();
+        let pending = Arc::new(Mutex::new(HashMap::from([(1, tx)])));
+        let reader = spawn_reader(child.stdout.take().unwrap(), pending);
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), rx)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(result, ResponseResult::Error { .. }));
+        assert!(reader.await.unwrap().is_err());
+        child.wait().await.unwrap();
+    }
 }

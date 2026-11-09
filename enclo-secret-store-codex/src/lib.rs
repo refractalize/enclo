@@ -132,7 +132,7 @@ pub async fn account_id() -> Result<String> {
     Ok(read_tokens(&home)?.account_id)
 }
 
-pub async fn credentials() -> Result<String> {
+pub async fn credentials() -> Result<(String, u64)> {
     let home = profile_home()?;
     check_private(&home, true)?;
     let _lock = lock_profile(&home).await?;
@@ -147,7 +147,8 @@ pub async fn credentials() -> Result<String> {
             "Codex did not renew its access token; run enclo auth login codex"
         );
     }
-    Ok(json!({"access_token": tokens.access_token, "account_id": tokens.account_id}).to_string())
+    let expires_at = expiry(&tokens.access_token)?;
+    Ok((json!({"access_token": tokens.access_token, "account_id": tokens.account_id}).to_string(), expires_at))
 }
 
 async fn read_response(

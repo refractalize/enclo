@@ -37,7 +37,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         .ok_or_else(|| anyhow::anyhow!("connection closed without a response"))?;
 
     match resp.result {
-        ResponseResult::Ok { value } => {
+        ResponseResult::Ok { value, .. } => {
             println!("{value}");
             Ok(())
         }

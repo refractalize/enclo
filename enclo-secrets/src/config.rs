@@ -111,12 +111,21 @@ impl Config {
     /// Loads the config, replacing `proxy.listen` with `listen` (when given)
     /// before validation, so an overridden address need not be in the file.
     pub fn from_file_with_listen(path: &Path, listen: Option<SocketAddr>) -> anyhow::Result<Self> {
+        Self::from_file_for_service(path, listen, false)
+    }
+
+    pub fn from_file_for_service(path: &Path, listen: Option<SocketAddr>, store_only: bool) -> anyhow::Result<Self> {
         let text = std::fs::read_to_string(path)
             .map_err(|e| anyhow::anyhow!("failed to read config {}: {e}", path.display()))?;
         let mut config: Config = toml::from_str(&text)
             .map_err(|e| anyhow::anyhow!("failed to parse config {}: {e}", path.display()))?;
         if listen.is_some() {
             config.proxy.listen = listen;
+        }
+
+        if store_only {
+            config.proxy.enabled = false;
+            config.secrets.socket.enabled = true;
         }
 
         let base = path.parent().unwrap_or(Path::new("."));

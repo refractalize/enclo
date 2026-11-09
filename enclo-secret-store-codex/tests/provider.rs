@@ -115,6 +115,9 @@ fn current_credentials_are_returned_without_launching_codex_or_exposing_refresh_
         value,
         json!({"access_token":f.token,"account_id":"account-test"})
     );
+    let expiry=time::OffsetDateTime::parse(r["expiresAt"].as_str().unwrap(), &time::format_description::well_known::Rfc3339).unwrap();
+    let claims:Value=serde_json::from_slice(&URL_SAFE_NO_PAD.decode(f.token.split('.').nth(1).unwrap()).unwrap()).unwrap();
+    assert_eq!(expiry.unix_timestamp() as u64,claims["exp"].as_u64().unwrap());
     assert!(!r.to_string().contains("NEVER_RETURN"));
     assert!(!f.home().join("refresh-count").exists());
 }
@@ -182,6 +185,7 @@ fn account_identity_lookup_returns_no_tokens_and_does_not_refresh() {
     let r: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(r["status"], "ok");
     assert_eq!(r["value"], "account-test");
+    assert!(r.get("expiresAt").is_none());
     assert!(!r.to_string().contains("TOKEN"));
     assert!(!f.home().join("refresh-count").exists());
 }

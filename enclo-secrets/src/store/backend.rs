@@ -179,6 +179,7 @@ async fn spawn_process(
     tracing::debug!(binary, "spawning backend process");
     let mut child = Command::new(binary)
         .args(args)
+        .kill_on_drop(true)
         .envs(env)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())

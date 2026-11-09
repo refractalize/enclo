@@ -10,6 +10,7 @@ use tokio::{process::Child, sync::Mutex};
 pub struct ManagedChild {
     name: &'static str,
     inner: Arc<Mutex<Option<Child>>>,
+    group: Arc<Mutex<Option<u32>>>,
 }
 
 impl ManagedChild {
@@ -17,11 +18,46 @@ impl ManagedChild {
         Self {
             name,
             inner: Arc::new(Mutex::new(None)),
+            group: Arc::new(Mutex::new(None)),
         }
     }
 
     pub async fn store(&self, child: Child) {
         *self.inner.lock().await = Some(child);
+    }
+
+    /// The caller must spawn this child with process_group(0).
+    pub async fn store_group(&self, child: Child) {
+        *self.group.lock().await = child.id();
+        self.store(child).await;
+    }
+
+    /// Terminate the leader gracefully, then remove any surviving descendants.
+    pub async fn stop_group(&self, grace: Duration) -> anyhow::Result<()> {
+        let group = self.group.lock().await.take();
+        if group.is_none() {
+            return self.kill().await;
+        }
+        let group = group.unwrap() as libc::pid_t;
+        if let Some(mut child) = self.inner.lock().await.take() {
+            if let Some(pid) = child.id() {
+                unsafe {
+                    libc::kill(pid as libc::pid_t, libc::SIGTERM);
+                }
+                let _ = tokio::time::timeout(grace, child.wait()).await;
+            }
+            // kill_on_drop cannot run after SIGKILL. The isolated process group
+            // also covers providers and their in-flight credential commands.
+            unsafe {
+                libc::kill(-group, libc::SIGKILL);
+            }
+            let _ = child.wait().await;
+        } else {
+            unsafe {
+                libc::kill(-group, libc::SIGKILL);
+            }
+        }
+        Ok(())
     }
 
     pub async fn process_alive(&self) -> Option<bool> {
@@ -124,7 +160,13 @@ pub async fn ensure_unix_socket_connectable(path: &Path, description: &str) -> a
     tokio::net::UnixStream::connect(path)
         .await
         .map(|_| ())
-        .map_err(|e| anyhow::anyhow!("{description} exists at {} but is not connectable: {}", path.display(), e))
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "{description} exists at {} but is not connectable: {}",
+                path.display(),
+                e
+            )
+        })
 }
 
 pub async fn wait_for_container_socket(
@@ -150,4 +192,75 @@ pub async fn wait_for_container_socket(
         "{description} never appeared at {socket_path} in container {container} after {}ms",
         attempts as u64 * interval.as_millis() as u64,
     )
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod group_tests {
+    use super::*;
+    #[tokio::test]
+    async fn forced_cleanup_kills_descendants_even_if_the_leader_has_exited() {
+        for exit_leader in [false, true] {
+            let root = std::env::temp_dir().join(format!(
+                "enclo-group-{}-{}",
+                std::process::id(),
+                exit_leader
+            ));
+            std::fs::create_dir_all(&root).unwrap();
+            let pidfile = root.join("child.pid");
+            let code = r#"import os,sys,signal,time
+from pathlib import Path
+if os.fork()==0:
+ signal.signal(signal.SIGTERM,signal.SIG_IGN)
+ Path(sys.argv[1]).write_text(str(os.getpid()))
+ time.sleep(60)
+else:
+ if sys.argv[2]=='true':os._exit(0)
+ signal.signal(signal.SIGTERM,signal.SIG_IGN)
+ time.sleep(60)
+"#;
+            let child = tokio::process::Command::new("/usr/bin/python3")
+                .args(["-c", code])
+                .arg(&pidfile)
+                .arg(exit_leader.to_string())
+                .process_group(0)
+                .kill_on_drop(true)
+                .spawn()
+                .unwrap();
+            struct Cleanup(i32, std::path::PathBuf);
+            impl Drop for Cleanup {
+                fn drop(&mut self) {
+                    unsafe {
+                        libc::kill(-self.0, libc::SIGKILL);
+                    }
+                    let _ = std::fs::remove_dir_all(&self.1);
+                }
+            }
+            let _cleanup = Cleanup(child.id().unwrap() as i32, root);
+            let managed = ManagedChild::new("fixture");
+            managed.store_group(child).await;
+            let deadline = std::time::Instant::now() + Duration::from_secs(3);
+            while !pidfile.exists() {
+                assert!(std::time::Instant::now() < deadline);
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            let pid = std::fs::read_to_string(&pidfile).unwrap();
+            if exit_leader {
+                while managed.process_alive().await != Some(false) {
+                    assert!(std::time::Instant::now() < deadline);
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            }
+            managed.stop_group(Duration::from_millis(30)).await.unwrap();
+            loop {
+                let alive = std::fs::read_to_string(format!("/proc/{pid}/stat"))
+                    .ok()
+                    .is_some_and(|s| s.split_whitespace().nth(2) != Some("Z"));
+                if !alive {
+                    break;
+                }
+                assert!(std::time::Instant::now() < deadline);
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }
+    }
 }

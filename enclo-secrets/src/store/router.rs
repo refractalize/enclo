@@ -12,6 +12,7 @@ pub struct Router {
 }
 
 pub struct CompiledRoute {
+    confirm: bool,
     patterns: Vec<CompiledPattern>,
     backend: String,
     cache: Option<Arc<Cache>>,
@@ -28,6 +29,7 @@ struct ParameterPattern {
 }
 
 pub struct ResolvedRoute {
+    pub confirm: bool,
     pub backend_name: String,
     pub backend: Arc<BackendClient>,
     pub cache: Option<Arc<Cache>>,
@@ -82,6 +84,7 @@ impl Router {
                     }
                 };
                 return Ok(Some(ResolvedRoute {
+                    confirm: route.confirm,
                     backend_name: route.backend.clone(),
                     backend,
                     cache: route.cache.as_ref().map(Arc::clone),
@@ -112,6 +115,7 @@ pub fn compile(
                 .map(|pattern| compile_pattern(pattern))
                 .collect::<anyhow::Result<Vec<_>>>()?;
             Ok(CompiledRoute {
+                confirm: route.confirm.unwrap_or(true),
                 patterns,
                 backend: route.backend.clone(),
                 cache,
