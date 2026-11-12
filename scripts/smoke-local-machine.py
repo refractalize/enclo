@@ -28,9 +28,13 @@ def main():
     parser.add_argument('--secrets', action='store_true', help='also test the real host secrets/proxy service using synthetic credentials')
     parser.add_argument('--managed-home', action='store_true', help='test persistent home ownership and initialization')
     parser.add_argument('--nested-podman', action='store_true', help='build and run nested containers without pulls; implies --managed-home')
+    parser.add_argument('--nvidia', action='store_true', help='expose NVIDIA CDI GPUs and verify nvidia-smi')
+    parser.add_argument('--nested-proc-mount', choices=['private', 'host'], default='private', help='explicit nested proc mode; host exposes outer-container proc')
     parser.add_argument('--desktop-dbus', action='store_true', help='use an isolated session bus, never the real desktop bus')
     parser.add_argument('--fixed-ssh-port', action='store_true', help='verify one exported SSH config survives recreation')
     args = parser.parse_args()
+    if args.nested_proc_mount == 'host' and not args.nested_podman:
+        parser.error('--nested-proc-mount=host requires --nested-podman')
     if args.nested_podman:
         args.managed_home = True
     binary = args.binary.resolve(strict=True)
@@ -56,7 +60,10 @@ def main():
                 stream.write("\n[home]\nenabled=true\n[home.init]\ncommand='echo initialized >> init-count; test $(id -u) = $(stat -c %u .)'\n")
         if args.nested_podman:
             with (config / 'containers/dev.toml').open('a') as stream:
-                stream.write('\n[nested_podman]\nenabled=true\n')
+                stream.write(f'\n[nested_podman]\nenabled=true\nproc_mount="{args.nested_proc_mount}"\n')
+        if args.nvidia:
+            with (config / 'containers/dev.toml').open('a') as stream:
+                stream.write('\n[gpu]\nnvidia=["all"]\n')
         if args.desktop_dbus:
             with (config / 'containers/dev.toml').open('a') as stream:
                 stream.write('\n[desktop.dbus]\nenabled=true\n')
@@ -230,6 +237,9 @@ def main():
                 report['plain_ssh_client'] = 'user-local executable discovers services without session environment'
 
             assert shell('id', '-u').stdout.strip() == str(os.getuid())
+            if args.nvidia:
+                assert 'GPU' in shell('nvidia-smi', '-L').stdout
+                report['nvidia'] = 'GPU discovered'
             if args.desktop_dbus:
                 shell('dbus-send', '--session', '--type=method_call', '--print-reply', '--dest=org.freedesktop.DBus', '/', 'org.freedesktop.DBus.ListNames')
                 denied = shell('dbus-send', '--session', '--type=method_call', '--print-reply', '--dest=org.freedesktop.DBus', '/', 'org.freedesktop.DBus.UpdateActivationEnvironment', 'dict:string:string:ENCLO_TEST,denied', check=False)
@@ -357,6 +367,12 @@ def main():
                 shell('podman', '--remote=false', 'image', 'exists', 'localhost/enclo-inner:smoke')
                 shell('podman', '--remote=false', 'cp', 'inner-marker:/marker', '/tmp/inner-after-recreate')
                 assert shell('cat', '/tmp/inner-after-recreate').stdout == 'nested-preserved'
+                # Test execution again after recreation, using the retained local image
+                # with an executable supplied from the outer container.
+                shell('python3', '-c', "import pathlib,shutil,subprocess; root=pathlib.Path('/tmp/inner-root'); files=['/bin/sh']+[p for p in subprocess.check_output(['ldd','/bin/sh'],text=True).split() if p.startswith('/')]; [( (root / p.lstrip('/')).parent.mkdir(parents=True,exist_ok=True), shutil.copyfile(p,root / p.lstrip('/')), (root / p.lstrip('/')).chmod(0o755)) for p in files]")
+                assert shell('podman', '--remote=false', 'run', '--rm', '--network=none', '--rootfs', '/tmp/inner-root', '/bin/sh', '-c', 'printf nested-ran').stdout == 'nested-ran'
+            if args.nvidia:
+                assert 'GPU' in shell('nvidia-smi', '-L').stdout
             changed = subprocess.run(['podman', '--remote=false', 'exec', recreated['container_id'], 'printenv', 'ENCLO_SMOKE_REVISION'], capture_output=True, text=True, check=True, timeout=10)
             assert changed.stdout.strip() == '2'
             tunnel()

@@ -23,8 +23,8 @@ struct Config {
     systemd: Systemd,
     #[serde(default, skip_serializing_if = "managed_home::HomeConfig::disabled")]
     home: managed_home::HomeConfig,
-    #[serde(default, skip_serializing_if = "features::Enabled::disabled")]
-    nested_podman: features::Enabled,
+    #[serde(default, skip_serializing_if = "features::NestedPodman::disabled")]
+    nested_podman: features::NestedPodman,
     #[serde(default, skip_serializing_if = "features::Gpu::disabled")]
     gpu: features::Gpu,
     #[serde(

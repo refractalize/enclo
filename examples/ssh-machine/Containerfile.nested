@@ -1,5 +1,5 @@
 # Build the normal or systemd SSH image first, then layer local build tools on it.
 ARG BASE=localhost/enclo-ssh-test:latest
 FROM ${BASE}
-RUN dnf install -y --setopt=install_weak_deps=False podman fuse-overlayfs slirp4netns passt shadow-utils-subid libcap python3 dbus-tools \
+RUN dnf install -y --setopt=install_weak_deps=False podman fuse-overlayfs slirp4netns passt shadow-utils-subid libcap python3 dbus-tools util-linux \
     && dnf clean all

@@ -354,6 +354,26 @@ Updates are atomic, and installation refuses to overwrite an unmanaged existing
 `~/.local/bin/enclo`. Generation-specific sockets and CA bundles remain in private
 temporary directories; the stable settings file points to the current generation.
 
+For AWS credentials, the installed client also provides
+`enclo aws-credentials PROFILE`. It requests `AWS_CREDENTIALS?profile=PROFILE`
+(with the profile URL-encoded) through the selected connection and prints the
+provider's credential JSON directly. The host secrets policy must allow that
+request and configure its AWS credentials provider.
+
+For example, in the target user's `~/.aws/config`:
+
+```ini
+[profile development]
+credential_process = /home/tim/.local/bin/enclo --connection work aws-credentials myprofile
+region = us-east-1
+```
+
+Replace the executable path with that user's absolute home path and `myprofile`
+with the host provider profile. `--connection` can be omitted when only one
+connection is active, or supplied through `ENCLO_CONNECTION`. Services must be
+running; the helper does not start host services. No separate helper binary or
+image rebuild is needed. `--socket PATH` overrides the selected secrets socket.
+
 Only the public CA certificate is transferred. The CA private key and backend
 credentials remain on the host. Proxy credentials are sent over SSH stdin into a
 mode-0600 environment file; they are not included in SSH command arguments or
@@ -795,6 +815,7 @@ These optional settings belong in `containers/NAME.toml`:
 ```toml
 [nested_podman]
 enabled = true
+# proc_mount = "host" # explicit compatibility option; see isolation tradeoff below
 
 [gpu]
 nvidia = ["all"] # CDI device selectors; e.g. ["0"] or a GPU UUID
@@ -838,13 +859,52 @@ masked-path restrictions, and retains the existing SELinux labeling-disabled
 setting. This is an explicit isolation tradeoff for nested containers; it is not
 host-engine socket forwarding or a privileged outer container. Setup derives
 subordinate UID/GID ranges from the actual outer mappings, configures mapping
-helpers, and verifies `podman --remote=false unshare true` before readiness.
+helpers, and verifies that the nested user namespace can create a mount/PID
+namespace and mount proc before readiness (requires util-linux `unshare`, `mount`
+and `umount` in the image).
 It runs again after each start, before home initialization, and stops the machine
 on failure. `XDG_RUNTIME_DIR=/run/user/UID` is supplied to enclo sessions; nested
 storage lives in the managed home. Nested cgroups are disabled and the default
 nested network is the outer machine's network. Nested containers can request
 another supported network explicitly. Image/volume storage survives recreation;
 running inner processes do not. No host Podman/Docker sockets are exposed.
+
+`nested_podman.proc_mount` defaults to `"private"`. NVIDIA CDI may overlay
+`/proc/driver/nvidia/params` to report `ModifyDeviceFiles: 0`, preventing NVIDIA
+software from attempting device-file modifications. That overlay can cause Linux
+to reject fresh proc mounts in nested user namespaces. Startup now detects this
+failure and stops the machine rather than reporting nested Podman ready.
+Enclo does not remove the NVIDIA hook or change the host CDI configuration.
+
+For this combination, explicitly opt into compatibility mode:
+
+```toml
+[nested_podman]
+enabled = true
+proc_mount = "host"
+```
+
+This configures nested Podman to bind the **outer container's** `/proc` read-only
+by default, preserving NVIDIA's replacement file. It does not mount the physical
+host's `/proc`. Nested workloads can see outer-container process information
+subject to normal access checks, and their proc view no longer matches their
+private PID namespace. Read-only is not a substitute for process isolation.
+Use this only for nested workloads trusted with that visibility. It is not an
+automatic fallback, and individual Podman settings can override these defaults.
+Changing the mode requires container recreation, which discards the writable
+layer while preserving the managed home and mounted volumes.
+
+The opt-in smoke test exercises this combination without host installation:
+
+```sh
+python3 scripts/smoke-local-machine.py --image localhost/enclo-nested-test:latest \
+  --nested-podman --nvidia --nested-proc-mount host
+```
+
+It checks GPU discovery and actual nested process execution, including after
+recreation. Omitting `--nvidia` and `--nested-proc-mount host` tests the private
+proc default. These checks do not validate CUDA workloads or GPU use inside
+the nested container.
 
 Desktop sockets require file-descriptor passing and therefore use a local
 read-only directory mount, not SSH byte-stream forwarding. Machine startup only

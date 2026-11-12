@@ -3,11 +3,31 @@ use std::collections::BTreeMap;
 
 #[derive(Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct Enabled {
+pub(super) struct NestedPodman {
     #[serde(default)]
     pub enabled: bool,
+    #[serde(default, skip_serializing_if = "ProcMount::is_private")]
+    proc_mount: ProcMount,
 }
-impl Enabled {
+#[derive(Default, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+enum ProcMount {
+    #[default]
+    Private,
+    Host,
+}
+impl ProcMount {
+    fn is_private(&self) -> bool {
+        *self == Self::Private
+    }
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Private => "private",
+            Self::Host => "host",
+        }
+    }
+}
+impl NestedPodman {
     pub fn disabled(&self) -> bool {
         !self.enabled
     }
@@ -30,6 +50,10 @@ impl Gpu {
 impl Config {
     pub(super) fn validate_features(&self) -> Result<()> {
         self.desktop.validate()?;
+        ensure!(
+            self.nested_podman.enabled || self.nested_podman.proc_mount.is_private(),
+            "nested_podman.proc_mount requires nested_podman.enabled=true"
+        );
         ensure!(
             self.gpu.drm || self.gpu.drm_nodes.is_empty(),
             "gpu.drm_nodes requires drm=true"
@@ -203,6 +227,7 @@ impl LocalContainer {
                 include_str!("../modules/nested_podman.py"),
                 &home.uid.to_string(),
                 &home.gid.to_string(),
+                config.nested_podman.proc_mount.as_str(),
             ]))
             .await?;
             output(podman().args([
@@ -217,9 +242,21 @@ impl LocalContainer {
                 "podman",
                 "--remote=false",
                 "unshare",
-                "true",
+                "sh",
+                "-eu",
+                "-c",
+                if config.nested_podman.proc_mount.is_private() {
+                    "exec unshare --mount --pid --fork --mount-proc true"
+                } else {
+                    // Keep the existing proc tree, including NVIDIA's protected params.
+                    r#"d=$(mktemp -d); trap 'rmdir "$d"' EXIT; unshare --mount --pid --fork sh -eu -c 'mount --rbind /proc "$1"; mount -o remount,bind,ro "$1"' sh "$d""#
+                },
             ]))
-            .await?;
+            .await.context(if config.nested_podman.proc_mount.is_private() {
+                "nested Podman proc mount check failed; NVIDIA or other mounts under /proc can block private proc mounts. To accept outer-container proc visibility, explicitly set [nested_podman] proc_mount = \"host\" and recreate the container"
+            } else {
+                "nested Podman proc mount check failed in host compatibility mode; check that unshare and mount are installed and that the outer proc tree can be bound read-only"
+            })?;
             Ok(())
         }
         .await;

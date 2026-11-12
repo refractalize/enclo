@@ -32,6 +32,9 @@ def main():
     if os.geteuid() != 0:
         raise RuntimeError("setup must run as container root")
     uid, gid = map(int, sys.argv[1:3])
+    proc_mount = sys.argv[3] if len(sys.argv) > 3 else "private"
+    if proc_mount not in {"private", "host"}:
+        raise RuntimeError("proc_mount must be private or host")
     if uid <= 0 or gid < 0:
         raise RuntimeError("setup requires a non-root workspace UID and valid GID")
     tools = {}
@@ -62,7 +65,8 @@ def main():
     runtime.chmod(0o700)
     config = Path("/etc/containers/containers.conf.d/90-enclo-nested.conf")
     config.parent.mkdir(parents=True, exist_ok=True)
-    config.write_text('[containers]\ncgroups = "disabled"\nnetns = "host"\n\n[engine]\ncgroup_manager = "cgroupfs"\nremote = false\n')
+    volumes = 'volumes = ["/proc:/proc:ro"]\n' if proc_mount == "host" else ""
+    config.write_text('[containers]\ncgroups = "disabled"\nnetns = "host"\n' + volumes + '\n[engine]\ncgroup_manager = "cgroupfs"\nremote = false\n')
     print(f"Configured nested rootless Podman for {username} (UID {uid}, GID {gid})")
 
 

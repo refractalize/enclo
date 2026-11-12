@@ -92,8 +92,10 @@ elif a[0] == 'exec':
         assert 'cap_setuid=ep' in a[a.index('-c')+1]
         (root/'nested-ready').touch()
         if (root/'fail-nested').exists(): sys.exit(7)
-    elif a[-2:]==['unshare','true']:
+    elif 'unshare' in a:
         assert (root/'nested-ready').exists() and '--remote=false' in a
+        assert '--mount-proc' in a[-1] or 'mount --rbind /proc' in a[-1]
+        if (root/'fail-proc').exists(): sys.exit(9)
     elif 'id' in a: print(os.getuid())
     elif 'cat' in a: print((root/'host.pub').read_text() if (root/'host.pub').exists() else 'ssh-ed25519 AAAATEST fixture')
     elif 'sh' in a: (root/'unit').write_text(sys.stdin.read())
@@ -733,9 +735,45 @@ fn machine_features_wire_devices_setup_and_local_desktop_without_host_services()
     }
 }
 #[test]
+fn nested_proc_mode_is_explicit_and_probe_failure_stops_machine() {
+    for mode in ["private", "host"] {
+        let f = Fixture::new();
+        fs::write(f.dir.join("config/containers/dev.toml"), format!(
+            "[container]\nimage='fixture:latest'\n[ssh]\nuser='dev'\n[home]\nenabled=true\n[nested_podman]\nenabled=true\nproc_mount='{mode}'\n"
+        )).unwrap();
+        f.ok(&["container", "start", "dev"]);
+        let calls: Vec<Vec<String>> = fs::read_to_string(f.dir.join("calls"))
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let setup = calls
+            .iter()
+            .find(|args| args.contains(&"python3".into()))
+            .unwrap();
+        assert_eq!(setup.last().unwrap(), mode);
+        let probe = calls
+            .iter()
+            .find(|args| args.contains(&"unshare".into()))
+            .unwrap();
+        assert_eq!(
+            probe.last().unwrap().contains("--mount-proc"),
+            mode == "private"
+        );
+        fs::write(f.dir.join("fail-proc"), "").unwrap();
+        let failure = f.run(&["container", "start", "dev"]);
+        assert!(!failure.status.success());
+        assert!(String::from_utf8_lossy(&failure.stderr).contains("proc mount check failed"));
+        assert_eq!(f.ok(&["container", "status", "dev"])["running"], false);
+    }
+}
+
+#[test]
 fn machine_features_reject_conflicts_before_podman() {
     for extra in [
         "[nested_podman]\nenabled=true",
+        "[nested_podman]\nproc_mount='host'",
+        "[nested_podman]\nproc_mount='invalid'",
         "[gpu]\nnvidia=['all --privileged']",
         "[desktop.dbus]\ntalk=['org.example.Test']",
         "[desktop.dbus]\nenabled=true\ncall=['bad rule']",

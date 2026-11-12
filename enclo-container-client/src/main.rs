@@ -1,3 +1,4 @@
+mod aws;
 mod codex;
 mod config;
 mod get;
@@ -30,6 +31,14 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Print AWS credential_process JSON using the host credentials provider
+    AwsCredentials {
+        /// AWS credentials profile to retrieve
+        profile: String,
+        /// Path to the enclo-secrets Unix socket
+        #[arg(long, short = 's')]
+        socket: Option<PathBuf>,
+    },
     #[command(hide = true)]
     ServiceInstall { name: String },
     #[command(hide = true)]
@@ -118,6 +127,9 @@ async fn main() -> anyhow::Result<()> {
     }
     match cli.command {
         Command::ServiceInstall { .. } | Command::ServiceRemove { .. } => unreachable!(),
+        Command::AwsCredentials { profile, socket } => {
+            aws::run(&socket.unwrap_or_else(default_socket), &profile).await
+        }
         Command::Auth {
             command:
                 AuthCommand::Setup {
