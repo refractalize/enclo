@@ -1,5 +1,5 @@
-use std::{os::unix::process::CommandExt, path::PathBuf};
 use crate::get;
+use std::{os::unix::process::CommandExt, path::PathBuf};
 
 pub async fn run(socket_path: PathBuf, names: Vec<String>, cmd: Vec<String>) -> anyhow::Result<()> {
     let secrets = get::fetch(&socket_path, &names).await?;

@@ -60,7 +60,10 @@ elif a[0] == 'inspect': print(json.dumps([v]))
 elif a[0] == 'run':
     assert '--detach' in a and '--userns=keep-id' in a
     assert ('--systemd=always' in a and '--init' not in a) or ('--systemd=false' in a and '--init' in a)
-    assert '--publish=127.0.0.1::22' in a and '--network=bridge' in a
+    publish=next(x for x in a if x.startswith('--publish='))
+    assert publish.startswith('--publish=127.0.0.1:') and publish.endswith(':22') and '--network=bridge' in a
+    if (root/'port-busy').exists(): print('bind: address already in use',file=sys.stderr); sys.exit(125)
+    published_port=publish.split(':')[1] or ((root/'ssh_port').read_text().strip() if (root/'ssh_port').exists() else '23456')
     assert a[-1] == '/run/enclo-ssh/boot.sh'
     assert a[a.index('--entrypoint')+1] == '/bin/sh'
     labels = dict(a[i+1].split('=',1) for i,x in enumerate(a) if x == '--label')
@@ -68,7 +71,7 @@ elif a[0] == 'run':
     counter = root/'count'
     count = int(counter.read_text())+1 if counter.exists() else 1
     counter.write_text(str(count))
-    v = {'Id':format(0xabc122+count,'x'), 'State':{'Running':True}, 'Config':{'Labels':labels}, 'Mounts':[{'Source':mount,'Destination':'/run/enclo-ssh'}], 'NetworkSettings':{'Ports':{'22/tcp':[{'HostIp':'127.0.0.1','HostPort':(root/'ssh_port').read_text().strip() if (root/'ssh_port').exists() else '23456'}]}}}
+    v = {'Id':format(0xabc122+count,'x'), 'State':{'Running':True}, 'Config':{'Labels':labels}, 'Mounts':[{'Source':mount,'Destination':'/run/enclo-ssh'}], 'NetworkSettings':{'Ports':{'22/tcp':[{'HostIp':'127.0.0.1','HostPort':published_port}]}}}
     if 'io.enclo.home' in labels:
         home=json.loads(labels['io.enclo.home'])
         assert home['volume']+':'+home['path']+':nocopy' in a
@@ -741,6 +744,132 @@ fn machine_features_reject_conflicts_before_podman() {
         let path = f.dir.join("config/containers/dev.toml");
         let original = fs::read_to_string(&path).unwrap();
         fs::write(path, format!("{original}\n{extra}\n")).unwrap();
+        assert!(!f.run(&["container", "start", "dev"]).status.success());
+        assert!(!f.dir.join("calls").exists());
+    }
+}
+
+#[test]
+fn ssh_export_uses_persistent_trust_and_add_updates_only_its_block() {
+    let f = Fixture::new();
+    let home = f.dir.join("export-home");
+    fs::create_dir_all(home.join(".ssh")).unwrap();
+    let config = home.join(".ssh/config");
+    let original =
+        "# unrelated configuration\nHost *\n Port 2222\nHost other\n HostName example.org\n";
+    fs::write(&config, original).unwrap();
+    f.ok(&["container", "start", "dev"]);
+    let export = f.run(&["container", "export", "dev"]);
+    assert!(
+        export.status.success(),
+        "{}",
+        String::from_utf8_lossy(&export.stderr)
+    );
+    let text = String::from_utf8(export.stdout).unwrap();
+    assert!(text.starts_with("Host enclo-dev\n"));
+    assert!(text.contains("StrictHostKeyChecking yes"));
+    assert!(text.contains("HostKeyAlias enclo-"));
+    assert!(!text.contains("HostKeyAlias enclo-abc123"));
+    assert!(!text.contains("/runtime/"));
+    assert_eq!(fs::read_to_string(&config).unwrap(), original);
+    let add = || {
+        f.command(&["container", "export", "dev", "--add"])
+            .env("HOME", &home)
+            .output()
+            .unwrap()
+    };
+    assert!(add().status.success());
+    let first = fs::read_to_string(&config).unwrap();
+    assert!(first.ends_with(original));
+    assert_eq!(
+        fs::metadata(&config).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    assert!(add().status.success());
+    assert_eq!(fs::read_to_string(&config).unwrap(), first);
+    let effective = Command::new("/usr/bin/ssh")
+        .args(["-G", "-F"])
+        .arg(&config)
+        .arg("enclo-dev")
+        .output()
+        .unwrap();
+    assert!(effective.status.success());
+    assert!(String::from_utf8_lossy(&effective.stdout).contains("port 23456\n"));
+    // The target file is updated while a dotfile-manager symlink is preserved.
+    let target = home.join("dotfile");
+    fs::rename(&config, &target).unwrap();
+    std::os::unix::fs::symlink(&target, &config).unwrap();
+    f.ok(&["container", "recreate", "dev", "--force"]);
+    assert!(add().status.success());
+    assert!(fs::symlink_metadata(&config)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    let updated = fs::read_to_string(&config).unwrap();
+    assert_eq!(updated.matches("Host enclo-dev\n").count(), 1);
+    assert_eq!(updated, first);
+    assert!(!updated.contains("HostKeyAlias enclo-abc123"));
+    assert!(updated.ends_with(original));
+    let custom = f.run(&["container", "export", "dev", "--host", "enclo-work"]);
+    assert!(custom.status.success());
+    assert!(custom.stdout.starts_with(b"Host enclo-work\n"));
+    assert!(!f
+        .run(&["container", "export", "dev", "--host", "bad\nHost *"])
+        .status
+        .success());
+    fs::write(&target, "Host enclo-dev\n HostName user-managed.example\n").unwrap();
+    assert!(!add().status.success());
+    assert!(fs::read_to_string(&target)
+        .unwrap()
+        .contains("user-managed.example"));
+    f.ok(&["container", "stop", "dev"]);
+    let stopped = f.run(&["container", "export", "dev"]);
+    assert!(!stopped.status.success());
+    assert!(String::from_utf8_lossy(&stopped.stderr).contains("container is stopped"));
+}
+
+#[test]
+fn fixed_ssh_port_and_stable_export_trust_survive_recreation() {
+    let f = Fixture::new();
+    let config = f.dir.join("config/containers/dev.toml");
+    let original = fs::read_to_string(&config).unwrap();
+    fs::write(&config, format!("{original}host_port=2222\n")).unwrap();
+    assert_eq!(f.ok(&["container", "start", "dev"])["port"], 2222);
+    let before = f.run(&["container", "export", "dev"]);
+    assert!(before.status.success());
+    let pin = f.state().join("known_hosts");
+    let first = fs::read_to_string(&pin).unwrap();
+    // A changed key for the same instance remains forbidden, including export trust.
+    fs::write(f.dir.join("host.pub"), "ssh-ed25519 AAAANEW fixture").unwrap();
+    assert!(!f.run(&["container", "start", "dev"]).status.success());
+    assert_eq!(fs::read_to_string(&pin).unwrap(), first);
+    assert_eq!(
+        f.ok(&["container", "recreate", "dev", "--force"])["port"],
+        2222
+    );
+    assert!(fs::read_to_string(&pin).unwrap().contains("AAAANEW"));
+    assert_eq!(f.run(&["container", "export", "dev"]).stdout, before.stdout);
+    assert!(
+        fs::read_to_string(f.state().join("instances/abc123/known_hosts"))
+            .unwrap()
+            .contains("AAAATEST")
+    );
+    fs::write(&config, format!("{original}host_port=2223\n")).unwrap();
+    assert!(!f.run(&["container", "start", "dev"]).status.success());
+    fs::write(f.dir.join("port-busy"), "").unwrap();
+    let failure = f.run(&["container", "recreate", "dev", "--force"]);
+    assert!(!failure.status.success());
+    let error = String::from_utf8_lossy(&failure.stderr);
+    assert!(error.contains("127.0.0.1:2223") && error.contains("address already in use"));
+}
+
+#[test]
+fn invalid_host_ports_are_rejected_before_podman() {
+    for value in ["0", "65536", "-1", "'2222'"] {
+        let f = Fixture::new();
+        let config = f.dir.join("config/containers/dev.toml");
+        let original = fs::read_to_string(&config).unwrap();
+        fs::write(&config, format!("{original}host_port={value}\n")).unwrap();
         assert!(!f.run(&["container", "start", "dev"]).status.success());
         assert!(!f.dir.join("calls").exists());
     }

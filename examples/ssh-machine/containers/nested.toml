@@ -4,6 +4,7 @@ image = "localhost/enclo-nested-test:latest"
 
 [ssh]
 user = "developer"
+# host_port = 2222 # optional stable loopback port for exported SSH access
 
 [home]
 enabled = true

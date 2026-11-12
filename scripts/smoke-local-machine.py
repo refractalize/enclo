@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import subprocess
 import ssl
+import socket
 import shutil
 import tempfile
 import threading
@@ -28,6 +29,7 @@ def main():
     parser.add_argument('--managed-home', action='store_true', help='test persistent home ownership and initialization')
     parser.add_argument('--nested-podman', action='store_true', help='build and run nested containers without pulls; implies --managed-home')
     parser.add_argument('--desktop-dbus', action='store_true', help='use an isolated session bus, never the real desktop bus')
+    parser.add_argument('--fixed-ssh-port', action='store_true', help='verify one exported SSH config survives recreation')
     args = parser.parse_args()
     if args.nested_podman:
         args.managed_home = True
@@ -43,6 +45,12 @@ def main():
         volume = f'enclo-smoke-{root.name}'
         (config / 'containers/dev.toml').write_text(
             f'[container]\nimage={json.dumps(args.image)}\nvolumes=[{json.dumps(volume + ":/persistent")}]\n[ssh]\nuser="developer"\n')
+        if args.fixed_ssh_port:
+            with socket.socket() as probe:
+                probe.bind(('127.0.0.1', 0))
+                fixed_port = probe.getsockname()[1]
+            with (config / 'containers/dev.toml').open('a') as stream:
+                stream.write(f'host_port={fixed_port}\n')
         if args.managed_home:
             with (config / 'containers/dev.toml').open('a') as stream:
                 stream.write("\n[home]\nenabled=true\n[home.init]\ncommand='echo initialized >> init-count; test $(id -u) = $(stat -c %u .)'\n")
@@ -198,6 +206,11 @@ def main():
             print(f'Starting isolated {"systemd" if args.systemd else "init/sshd"} machine…', flush=True)
             initial = data('container', 'start', 'dev')
             report['initial_endpoint'] = initial
+            exported = root / 'exported-ssh-config'
+            if args.fixed_ssh_port:
+                assert initial['port'] == fixed_port
+                exported.write_text(cli('container', 'export', 'dev').stdout)
+                subprocess.run(['ssh', '-F', str(exported), 'enclo-dev', 'true'], check=True, timeout=15)
             assert initial['running'] and initial['port'] > 0
             assert len(data('container', 'list')) == 1
             assert not data('services', 'list')
@@ -208,6 +221,14 @@ def main():
 
             supervisor = start_services()
             assert data('services', 'status', 'work')['transport_ready']
+            if args.secrets:
+                exported_client = root / 'client-ssh-config'
+                exported_client.write_text(cli('container', 'export', 'dev').stdout)
+                ordinary = subprocess.run(['ssh', '-F', str(exported_client), 'enclo-dev', '"$HOME/.local/bin/enclo" get SMOKE_TOKEN'], capture_output=True, text=True, timeout=15)
+                assert ordinary.returncode == 0, ordinary.stderr
+                assert 'SMOKE_TOKEN' in ordinary.stdout
+                report['plain_ssh_client'] = 'user-local executable discovers services without session environment'
+
             assert shell('id', '-u').stdout.strip() == str(os.getuid())
             if args.desktop_dbus:
                 shell('dbus-send', '--session', '--type=method_call', '--print-reply', '--dest=org.freedesktop.DBus', '/', 'org.freedesktop.DBus.ListNames')
@@ -314,6 +335,11 @@ def main():
             recreated = data('container', 'recreate', 'dev')
             supervisor = start_services()
             assert recreated['container_id'] != initial['container_id']
+            if args.fixed_ssh_port:
+                assert recreated['port'] == fixed_port
+                # No re-export: the original file must trust only the newly provisioned key.
+                subprocess.run(['ssh', '-F', str(exported), 'enclo-dev', 'true'], check=True, timeout=15)
+                report['stable_ssh_export'] = 'unchanged export connects after recreation'
             new_known_hosts = state / f"instances/{recreated['container_id']}/known_hosts"
             assert new_known_hosts.read_bytes().split()[1:] != pinned_key.split()[1:]
             assert identity == (state / 'client_ed25519').read_bytes()

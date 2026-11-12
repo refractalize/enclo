@@ -8,6 +8,7 @@ image = "localhost/enclo-ssh-test:latest"
 [ssh]
 # This account must exist in the image with your host UID.
 user = "developer"
+# host_port = 2222 # optional stable loopback port for exported SSH access
 
 # Persistent, initially empty home owned by the image SSH user.
 [home]

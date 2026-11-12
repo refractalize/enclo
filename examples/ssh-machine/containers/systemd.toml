@@ -3,6 +3,7 @@ image = "localhost/enclo-systemd-test:latest"
 
 [ssh]
 user = "developer"
+# host_port = 2222 # optional stable loopback port for exported SSH access
 
 [systemd]
 enabled = true

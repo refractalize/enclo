@@ -1,6 +1,7 @@
 //! Local Podman machines. No host systemd, D-Bus, or persistent enclo daemon.
 mod features;
 pub mod managed_home;
+mod ssh_export;
 use anyhow::{bail, ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -49,6 +50,8 @@ struct Container {
 #[serde(deny_unknown_fields)]
 struct Ssh {
     user: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    host_port: Option<std::num::NonZeroU16>,
 }
 #[derive(Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -341,7 +344,6 @@ impl LocalContainer {
                 "--label",
                 &format!("io.enclo.state={}", self.state.canonicalize()?.display()),
                 "--network=bridge",
-                "--publish=127.0.0.1::22",
                 "--userns=keep-id",
                 "--user=0:0",
                 "--cgroupns=private",
@@ -351,6 +353,14 @@ impl LocalContainer {
             .arg(format!(
                 "{}:/run/enclo-ssh:ro",
                 bootstrap.canonicalize()?.display()
+            ));
+            cmd.arg(format!(
+                "--publish=127.0.0.1:{}:22",
+                config
+                    .ssh
+                    .host_port
+                    .map(|p| p.to_string())
+                    .unwrap_or_default()
             ));
             if let Some(home) = &home {
                 cmd.arg("--volume")
@@ -380,7 +390,14 @@ impl LocalContainer {
             }
             cmd.arg(&config.container.image)
                 .arg("/run/enclo-ssh/boot.sh");
-            output(&mut cmd).await?;
+            output(&mut cmd)
+                .await
+                .with_context(|| match config.ssh.host_port {
+                    Some(port) => format!(
+                        "start container with SSH on 127.0.0.1:{port}; the port must be available"
+                    ),
+                    None => "start container with an allocated SSH port".into(),
+                })?;
         }
         let value = self
             .inspect()
@@ -560,6 +577,7 @@ impl LocalContainer {
             ensure!(tokio::time::Instant::now() < deadline, "container SSH authentication failed; check the image's SSH user and container logs (enclo-sshd.service in systemd mode)");
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
+        self.refresh_export_trust(&endpoint)?;
         atomic_write(
             self.dir.join("endpoint.json"),
             serde_json::to_vec_pretty(&endpoint)?,
@@ -605,6 +623,14 @@ impl LocalContainer {
     }
     fn write_ssh_config(&self, endpoint: &Endpoint) -> Result<PathBuf> {
         let id = &endpoint.container_id;
+        let port = endpoint.port.context("Podman did not publish SSH port")?;
+        let text = self.ssh_stanza(endpoint, &format!("enclo-{id}"), false)?;
+        let path = self.dir.join(format!("ssh_config-{id}-{port}"));
+        atomic_write(&path, text)?;
+        Ok(path)
+    }
+    fn ssh_stanza(&self, endpoint: &Endpoint, alias: &str, stable: bool) -> Result<String> {
+        let id = &endpoint.container_id;
         let instance = self.state.join("instances").join(id);
         crate::connection_runtime::validate(&instance)
             .context("SSH trust state is missing; run container start first")?;
@@ -619,10 +645,13 @@ impl LocalContainer {
             "invalid stored SSH user"
         );
         let port = endpoint.port.context("Podman did not publish SSH port")?;
-        let text = format!("Host enclo-{id}\n HostName 127.0.0.1\n Port {port}\n User {user}\n IdentityFile {}\n IdentitiesOnly yes\n UserKnownHostsFile {}\n GlobalKnownHostsFile /dev/null\n HostKeyAlias enclo-{id}\n StrictHostKeyChecking yes\n BatchMode yes\n", ssh_path(&key.canonicalize()?)?, ssh_path(&known_hosts.canonicalize()?)?);
-        let path = self.dir.join(format!("ssh_config-{id}-{port}"));
-        atomic_write(&path, text)?;
-        Ok(path)
+        let (known_hosts, host_alias) = if stable {
+            (self.state.join("known_hosts"), self.podman_name.clone())
+        } else {
+            (known_hosts, format!("enclo-{id}"))
+        };
+        let text = format!("Host {alias}\n HostName 127.0.0.1\n Port {port}\n User {user}\n IdentityFile {}\n IdentitiesOnly yes\n UserKnownHostsFile {}\n GlobalKnownHostsFile /dev/null\n HostKeyAlias {host_alias}\n StrictHostKeyChecking yes\n BatchMode yes\n", ssh_path(&key.canonicalize()?)?, ssh_path(&known_hosts.canonicalize()?)?);
+        Ok(text)
     }
     pub async fn remove(&self, force: bool) -> Result<()> {
         let _lock = self.lock()?;

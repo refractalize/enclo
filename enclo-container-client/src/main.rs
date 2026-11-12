@@ -3,6 +3,7 @@ mod config;
 mod get;
 mod proxy;
 mod run;
+mod services;
 mod util;
 
 use clap::{Parser, Subcommand};
@@ -11,19 +12,28 @@ use std::path::PathBuf;
 use enclo_backend_protocol::DEFAULT_SECRETS_SOCKET;
 
 fn default_socket() -> PathBuf {
-    std::env::var_os("ENCLO_SECRETS_SOCKET").filter(|v| !v.is_empty())
-        .map(PathBuf::from).unwrap_or_else(|| PathBuf::from(DEFAULT_SECRETS_SOCKET))
+    std::env::var_os("ENCLO_SECRETS_SOCKET")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_SECRETS_SOCKET))
 }
 
 #[derive(Parser)]
 #[command(name = "enclo", about = "enclo container client")]
 struct Cli {
+    /// Select active services installed for this user (defaults to the only active connection)
+    #[arg(long, global = true)]
+    connection: Option<String>,
     #[command(subcommand)]
     command: Command,
 }
 
 #[derive(Subcommand)]
 enum Command {
+    #[command(hide = true)]
+    ServiceInstall { name: String },
+    #[command(hide = true)]
+    ServiceRemove { name: String, generation: PathBuf },
     /// Prepare a provider to authenticate through the host proxy
     Auth {
         #[command(subcommand)]
@@ -32,8 +42,8 @@ enum Command {
     /// Fetch one or more secrets and print them as a JSON object to stdout
     Get {
         /// Path to the enclo-secrets Unix socket
-        #[arg(long, short = 's', default_value_os_t = default_socket())]
-        socket: PathBuf,
+        #[arg(long, short = 's')]
+        socket: Option<PathBuf>,
 
         /// Path to the client config file (default: $XDG_CONFIG_HOME/enclo/client.toml)
         #[arg(long, short = 'c')]
@@ -54,8 +64,8 @@ enum Command {
     /// Fetch secrets and run a command with them set as environment variables
     Run {
         /// Path to the enclo-secrets Unix socket
-        #[arg(long, short = 's', default_value_os_t = default_socket())]
-        socket: PathBuf,
+        #[arg(long, short = 's')]
+        socket: Option<PathBuf>,
 
         /// Path to the client config file (default: $XDG_CONFIG_HOME/enclo/client.toml)
         #[arg(long, short = 'c')]
@@ -91,8 +101,8 @@ enum AuthCommand {
     Setup {
         #[arg(value_parser = ["codex"])]
         provider: String,
-        #[arg(long, default_value_os_t = default_socket())]
-        socket: PathBuf,
+        #[arg(long)]
+        socket: Option<PathBuf>,
     },
 }
 
@@ -100,13 +110,21 @@ enum AuthCommand {
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
+        Command::ServiceInstall { name } => {
+            return services::install(&name, serde_json::from_reader(std::io::stdin())?)
+        }
+        Command::ServiceRemove { name, generation } => return services::remove(&name, &generation),
+        _ => services::load(cli.connection.as_deref())?,
+    }
+    match cli.command {
+        Command::ServiceInstall { .. } | Command::ServiceRemove { .. } => unreachable!(),
         Command::Auth {
             command:
                 AuthCommand::Setup {
                     provider: _,
                     socket,
                 },
-        } => codex::setup(&socket).await,
+        } => codex::setup(&socket.unwrap_or_else(default_socket)).await,
         Command::Get {
             socket,
             config,
@@ -119,7 +137,7 @@ async fn main() -> anyhow::Result<()> {
             }
             let cfg = config::ClientConfig::load_or_default(config.as_deref())?;
             let resolved = cfg.resolve(&group, &names)?;
-            get::run(socket, resolved, env).await
+            get::run(socket.unwrap_or_else(default_socket), resolved, env).await
         }
         Command::Run {
             socket,
@@ -133,7 +151,7 @@ async fn main() -> anyhow::Result<()> {
             }
             let cfg = config::ClientConfig::load_or_default(config.as_deref())?;
             let resolved = cfg.resolve(&group, &names)?;
-            run::run(socket, resolved, cmd).await
+            run::run(socket.unwrap_or_else(default_socket), resolved, cmd).await
         }
         Command::Proxy { env, cmd } => proxy::run(env, &cmd),
     }

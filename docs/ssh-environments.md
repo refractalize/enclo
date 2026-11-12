@@ -169,7 +169,7 @@ is not accepted by this backend.
 
 Podman runs locally (`--remote=false`), rootless, detached, with its small init
 (or opt-in systemd) as PID 1, keep-id user mapping, a private bridge, and
-`127.0.0.1:<allocated-port>:22`. SELinux container labeling remains disabled
+`127.0.0.1:<host-port>:22` (allocated unless `[ssh] host_port` is set). SELinux container labeling remains disabled
 for this initial local backend, as in
 the existing systemd module. Outbound internet access remains available.
 Container names and ownership labels include a hash of the canonical config
@@ -224,6 +224,7 @@ so independent configurations cannot accidentally share a `dev` identity.
 $ENCLO_STATE_DIR/containers/<config-root-hash>/dev/
     lifecycle.lock        # shared even across different runtime roots
     client_ed25519[.pub]   # private client key stays on the host
+    known_hosts           # current logical-machine host key used by SSH exports
     bootstrap/            # read-only bind mount; no private keys
         authorized_keys
         sshd_config
@@ -336,7 +337,22 @@ Sessions source that generation's private environment file. It supplies:
 - A session-local CA bundle, preserving normal OS roots and adding the proxy CA,
   through `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`,
   `AWS_CA_BUNDLE`, and `NODE_EXTRA_CA_CERTS`.
-- A private `bin` directory on PATH when the client is uploaded as `enclo`.
+- `$HOME/.local/bin` on PATH and `ENCLO_CONNECTION` when the client is uploaded.
+
+With `client_binary` configured, service startup installs the target-compatible
+client at `~/.local/bin/enclo` for both containers and remote machines. Private
+settings are published at `~/.local/state/enclo/connections/NAME/active.json`.
+Ordinary SSH sessions can invoke `~/.local/bin/enclo get SECRET` directly; no
+shell startup files are modified. Add `~/.local/bin` to your shell PATH if needed.
+The client selects the only active connection automatically. For multiple
+connections to the same remote user, use `--connection NAME` or
+`ENCLO_CONNECTION`; the command-line option takes precedence. Connection names
+and proxy listener ports must be distinct on that target.
+
+Stopping services withdraws their settings but leaves the installed client.
+Updates are atomic, and installation refuses to overwrite an unmanaged existing
+`~/.local/bin/enclo`. Generation-specific sockets and CA bundles remain in private
+temporary directories; the stable settings file points to the current generation.
 
 Only the public CA certificate is transferred. The CA private key and backend
 credentials remain on the host. Proxy credentials are sent over SSH stdin into a
@@ -881,3 +897,58 @@ D-Bus daemon for proxy checks. Unit/integration fixtures check GPU arguments,
 Wayland descriptor passing/revocation and refusal of unsupported compositors,
 D-Bus allow/deny policy, exclusive ownership, and restart. These fixtures do not
 validate real GPU workloads or rendering against a desktop compositor.
+
+## Exporting SSH access for external clients
+
+```sh
+enclo container export dev                     # print Host enclo-dev
+enclo container export dev --host enclo-work   # choose another alias
+enclo container export dev --add               # add/update ~/.ssh/config
+```
+
+The argument names the container, not the connection profile (`work` selects
+`dev` in the examples). The container must already be running. Export reads its
+live Podman endpoint and uses persistent client identity and pinned host-key files;
+it does not start services or change trust. Without `--add`, only a standard SSH
+stanza is printed, suitable for redirection into an included config file.
+
+`--add` writes a marked block to `$HOME/.ssh/config`, preserving unrelated content
+and updating that machine/alias block on repeated calls. The specific stanza is
+placed before existing defaults because OpenSSH uses the first matching values.
+An explicit unmanaged alias or another machine's block is never overwritten:
+choose another `--host`. Config symlinks are retained and their regular-file target
+is updated atomically. The resulting config has mode 0600. Incomplete managed
+markers are reported for repair rather than guessing which text to replace.
+
+For a stable host endpoint, configure the container before exporting:
+
+```toml
+[ssh]
+user = "tim"
+host_port = 2222
+```
+
+`host_port` accepts integers 1–65535. Omitting it retains automatic allocation.
+The bind address is always IPv4 loopback; an unavailable port fails without an
+allocated-port fallback. Changing this setting requires recreation. Choose a
+different fixed port for each concurrently running machine.
+
+Exports use a stable, config-root-and-machine-specific `HostKeyAlias` and a
+persistent `known_hosts` file. After successful SSH provisioning, enclo updates
+that file from the new instance's Podman-verified host key. Internal connections
+retain immutable per-instance pins; a changed key on the same instance is still
+rejected. Strict host-key checking remains enabled.
+
+With a fixed port and unchanged SSH user/state directory, the same exported entry
+works after stop/start and recreation: no edit to `~/.ssh/config` is needed.
+Automatically allocated ports can change on recreation, requiring another export.
+Changing the SSH user, fixed port or state directory also requires re-exporting.
+Entries generated by versions using per-instance export pins must be exported
+once more with `--add` to adopt this stable layout.
+The entry references persistent state, so clearing runtime files alone does not
+invalidate it. Direct SSH clients do not use enclo session accounting, automatic
+service startup, or session secret/proxy environment setup; start the container
+and any required services separately. The installed enclo client discovers its
+service settings itself, including from ordinary SSH sessions; this does not set
+the environment of the surrounding shell. External application SSH compatibility
+must be tested in that application.

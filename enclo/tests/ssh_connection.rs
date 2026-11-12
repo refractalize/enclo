@@ -106,6 +106,7 @@ impl Fixture {
         Stdio::from(fs::File::create(self.root.join(name)).unwrap())
     }
     fn start_sshd(&mut self) {
+        fs::create_dir_all(self.root.join("remote-home")).unwrap();
         for name in ["host", "client"] {
             assert!(Command::new("ssh-keygen")
                 .args(["-q", "-t", "ed25519", "-N", "", "-f"])
@@ -115,7 +116,7 @@ impl Fixture {
                 .success());
         }
         let port = unused_port();
-        fs::write(self.root.join("sshd_config"), format!("Port {port}\nListenAddress 127.0.0.1\nHostKey {root}/host\nPidFile {root}/sshd.pid\nAuthorizedKeysFile {root}/client.pub\nStrictModes no\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nUsePAM no\nAllowTcpForwarding yes\nAllowStreamLocalForwarding yes\nGatewayPorts no\n", root=self.root.display())).unwrap();
+        fs::write(self.root.join("sshd_config"), format!("SetEnv HOME={root}/remote-home\nPort {port}\nListenAddress 127.0.0.1\nHostKey {root}/host\nPidFile {root}/sshd.pid\nAuthorizedKeysFile {root}/client.pub\nStrictModes no\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nUsePAM no\nAllowTcpForwarding yes\nAllowStreamLocalForwarding yes\nGatewayPorts no\n", root=self.root.display())).unwrap();
         let host_key = fs::read_to_string(self.root.join("host.pub")).unwrap();
         fs::write(
             self.root.join("known_hosts"),
@@ -124,7 +125,7 @@ impl Fixture {
         .unwrap();
         let user =
             String::from_utf8(Command::new("id").arg("-un").output().unwrap().stdout).unwrap();
-        fs::write(self.root.join("ssh_config"), format!("Host fixture\n HostName 127.0.0.1\n Port {port}\n User {}\n IdentityFile {root}/client\n IdentitiesOnly yes\n UserKnownHostsFile {root}/known_hosts\n GlobalKnownHostsFile /dev/null\n StrictHostKeyChecking yes\n", user.trim(), root=self.root.display())).unwrap();
+        fs::write(self.root.join("ssh_config"), format!("Host fixture\n HostName 127.0.0.1\n SetEnv HOME={root}/remote-home\nPort {port}\n User {}\n IdentityFile {root}/client\n IdentitiesOnly yes\n UserKnownHostsFile {root}/known_hosts\n GlobalKnownHostsFile /dev/null\n StrictHostKeyChecking yes\n", user.trim(), root=self.root.display())).unwrap();
         let sshd = std::env::var_os("ENCLO_TEST_SSHD")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("/usr/sbin/sshd"));
@@ -545,6 +546,36 @@ secret = "PROXY_ONLY"
         }
         f.ready()
     });
+    let direct = |f: &Fixture, args: &[&str]| {
+        let command = format!(
+            "exec \"$HOME/.local/bin/enclo\" {}",
+            args.iter()
+                .map(|s| format!("'{}'", s.replace('\'', "'\\''")))
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+        Command::new("ssh")
+            .arg("-F")
+            .arg(f.root.join("ssh_config"))
+            .args(["-T", "fixture"])
+            .arg(command)
+            .output()
+            .unwrap()
+    };
+    let plain = direct(&f, &["get", "ALLOWED"]);
+    assert!(
+        plain.status.success(),
+        "{}",
+        String::from_utf8_lossy(&plain.stderr)
+    );
+    assert!(f.root.join("remote-home/.local/bin/enclo").is_file());
+    let active = f
+        .root
+        .join("remote-home/.local/state/enclo/connections/profile/active.json");
+    assert_eq!(
+        fs::metadata(&active).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
     let run = |f: &Fixture, args: &[&str]| f.cli("session").arg("--").args(args).output().unwrap();
     let allowed = run(&f, &["enclo", "get", "ALLOWED"]);
     assert!(
@@ -697,6 +728,7 @@ secret = "PROXY_ONLY"
     assert!(run(&f, &["true"]).status.success());
     assert!(f.ready());
     assert!(!run(&f, &["enclo", "get", "ALLOWED"]).status.success());
+    assert!(!direct(&f, &["get", "ALLOWED"]).status.success());
     // Both individual transports can be disabled without changing access policy.
     fs::write(
         f.root.join("secrets.toml"),
@@ -760,6 +792,11 @@ secret = "PROXY_ONLY"
         .success());
     assert!(!f.ready());
     assert!(!f.root.join("connections/profile/services-env").exists());
+    assert!(f.root.join("remote-home/.local/bin/enclo").is_file());
+    assert!(!active.exists());
+    let unavailable = direct(&f, &["get", "ALLOWED"]);
+    assert!(!unavailable.status.success());
+    assert!(String::from_utf8_lossy(&unavailable.stderr).contains("no active enclo services"));
 }
 
 #[test]

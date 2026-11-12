@@ -213,6 +213,8 @@ struct ConnectionName {
 
 #[derive(Subcommand)]
 enum ContainerAction {
+    /// Export SSH settings, or add/update a managed entry in ~/.ssh/config
+    Export { name: String, #[arg(long)] host: Option<String>, #[arg(long)] add: bool },
     /// Initialize a managed home; --rerun explicitly reapplies the configured script
     HomeInit { name: String, #[arg(long)] rerun: bool },
     Run(ConnectionName),
@@ -327,7 +329,14 @@ async fn main() -> Result<()> {
     match cli.command {
         Command::Container { action, runtime_dir } => {
             anyhow::ensure!(!cli.target.is_explicit(), "container commands take a name; use top-level run for legacy configs");
+            if let ContainerAction::Export { name, host, add } = &action {
+                let machine = enclo::local_container::LocalContainer::new(name, &config_dir(), runtime_dir.as_deref(), cli.state_dir.as_deref())?;
+                let text = machine.export_ssh(host.as_deref(), *add).await?;
+                if !add { print!("{text}"); }
+                return Ok(());
+            }
             let (operation, name, force) = match action {
+                ContainerAction::Export { .. } => unreachable!(),
                 ContainerAction::HomeInit { name, rerun } => ("home-init", Some(name), rerun),
                 ContainerAction::Start(selected) => ("start", selected.name, false),
                 ContainerAction::Status(selected) => ("status", selected.name, false),

@@ -469,6 +469,7 @@ impl SshServices {
                 !host.exited()?,
                 "host secrets service exited during startup; see host-services.log"
             );
+            host.publish(&self.profile).await?;
             if let Some(file) = host.environment_file() {
                 host_services::private_write(
                     &self.runtime.dir.join("services-env"),

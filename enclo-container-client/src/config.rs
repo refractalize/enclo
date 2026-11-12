@@ -1,6 +1,6 @@
+use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use serde::Deserialize;
 
 #[derive(Debug, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
@@ -48,7 +48,9 @@ impl ClientConfig {
 
         for group_spec in groups {
             for group_name in group_spec.split(',').map(str::trim) {
-                let members = self.groups.get(group_name)
+                let members = self
+                    .groups
+                    .get(group_name)
                     .ok_or_else(|| anyhow::anyhow!("unknown group '{group_name}'"))?;
                 for member in members {
                     if seen.insert(member.clone()) {
