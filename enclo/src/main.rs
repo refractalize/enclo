@@ -532,6 +532,8 @@ async fn exec_into_target(
     }
     all_env.extend_from_slice(env);
 
+    let workspace_user = format!("{}:{}", loaded.ctx.uid, loaded.ctx.gid);
+    let user = user.or_else(|| loaded.config.modules.systemd.enabled.then_some(workspace_user.as_str()));
     podman::exec(
         &loaded.ctx.container_name,
         shell,

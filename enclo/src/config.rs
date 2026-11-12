@@ -104,7 +104,7 @@ fn default_startup_timeout_secs() -> std::num::NonZeroU32 {
 fn default_network() -> String {
     "host".into()
 }
-fn default_command() -> Vec<String> {
+pub(crate) fn default_command() -> Vec<String> {
     vec![
         "sh".into(),
         "-c".into(),
@@ -122,6 +122,8 @@ fn default_exec_shell() -> String {
 #[serde(deny_unknown_fields)]
 pub struct ModulesConfig {
     #[serde(default)]
+    pub systemd: SystemdConfig,
+    #[serde(default)]
     pub gpg_agent: GpgAgentConfig,
     #[serde(default)]
     pub ssh_agent: SshAgentConfig,
@@ -131,6 +133,8 @@ pub struct ModulesConfig {
     pub docker_socket: DockerSocketConfig,
     #[serde(default)]
     pub podman_socket: PodmanSocketConfig,
+    #[serde(default)]
+    pub nested_podman: NestedPodmanConfig,
     #[serde(default)]
     pub nvidia: NvidiaConfig,
     #[serde(default)]
@@ -181,6 +185,13 @@ fn default_true() -> bool {
 #[derive(Debug, Deserialize, Default, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct NvidiaConfig {
+    #[serde(default)]
+    pub enabled: bool,
+}
+
+#[derive(Debug, Deserialize, Default, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct NestedPodmanConfig {
     #[serde(default)]
     pub enabled: bool,
 }
@@ -450,4 +461,11 @@ mod tests {
             assert!(error.to_string().contains("startup_timeout_secs"));
         }
     }
+}
+
+#[derive(Debug, Deserialize, Default, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct SystemdConfig {
+    #[serde(default)]
+    pub enabled: bool,
 }

@@ -6,21 +6,29 @@ use std::ffi::OsString;
 pub struct ModuleOutput {
     /// Activate modules after Podman has initialized the real container network.
     pub requires_container_init: bool,
+    /// Override the default container command (for an init system).
+    pub container_command: Option<Vec<String>>,
     pub env_vars: Vec<(String, String)>,
     pub volumes: Vec<VolumeMount>,
     pub podman_args: Vec<OsString>,
     pub exec_env_vars: Vec<(String, String)>,
     pub post_start_cmds: Vec<PostStartCmd>,
+    /// Required module setup, run before central hooks and home initialization.
+    pub required_post_start_cmds: Vec<PostStartCmd>,
 }
 
 impl ModuleOutput {
     pub fn merge(&mut self, other: ModuleOutput) {
         self.requires_container_init |= other.requires_container_init;
+        if other.container_command.is_some() {
+            self.container_command = other.container_command;
+        }
         self.env_vars.extend(other.env_vars);
         self.volumes.extend(other.volumes);
         self.podman_args.extend(other.podman_args);
         self.exec_env_vars.extend(other.exec_env_vars);
         self.post_start_cmds.extend(other.post_start_cmds);
+        self.required_post_start_cmds.extend(other.required_post_start_cmds);
     }
 }
 

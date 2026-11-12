@@ -168,7 +168,7 @@ devices = ["/dev/fuse"]
 security_opts = ["seccomp=unconfined", "unmask=ALL"]
 env = ["XDG_RUNTIME_DIR=%t"]
 post_start = [
-  { args = ["/usr/local/bin/enclo-nested-podman-setup"], user = "root" },
+  { args = ["/usr/local/bin/workspace-setup"], user = "root" },
 ]
 ```
 
@@ -179,13 +179,8 @@ failure stops/removes the container and tears down modules without reporting
 readiness. These central-profile commands are separate from module-generated
 post-start commands.
 
-The example permits a nested rootless Podman engine. It requires a full Podman
-installation and an image-provided setup helper. The helper must allocate
-subordinate IDs within the outer container's actual mappings and prepare its
-runtime directory. Disabling `modules.podman_socket` avoids connecting the local
-CLI to the host engine. `seccomp=unconfined` and `unmask=ALL` relax the outer
-container's restrictions. With inner networking configured as `host`, the inner
-containers share the workspace network namespace.
+For nested rootless Podman, use [`modules.nested_podman`](#modulesnested_podman).
+Its required setup runs before central `post_start` hooks and home initialization.
 
 ### `userns`
 
@@ -439,6 +434,48 @@ The security context is revoked automatically when the container stops.
 
 ---
 
+### `[modules.nested_podman]`
+
+Enable a real rootless Podman engine inside the workspace container:
+
+```toml
+[modules.nested_podman]
+enabled = true
+```
+
+Disabled by default. Requires a Linux host, a non-root workspace user, the default
+`container.userns = "keep-id"`, and host devices `/dev/fuse` and `/dev/net/tun`.
+It cannot be combined with `modules.podman_socket` or `modules.docker_socket`.
+
+The module adds both devices, `seccomp=unconfined`, `unmask=ALL`, and
+`label=disable`; it runs the workspace as its mapped user (or runs systemd as
+PID 1 when `modules.systemd` is enabled) and prepares a private `XDG_RUNTIME_DIR`. These settings relax the outer container's security controls
+and are applied only when the module is enabled. Conflicting security options,
+including `no-new-privileges`, are rejected before launch.
+
+The image needs a writable root filesystem, full Podman (not only podman-remote),
+`newuidmap`, `newgidmap`, `setcap`, and Python 3. Install `fuse-overlayfs` and
+networking helpers for the storage and network modes you use. On Fedora the
+packages are `podman`, `shadow-utils-subid`, `libcap`, `python3`,
+`fuse-overlayfs`, and `slirp4netns`; add `podman-compose` for `podman compose`.
+No image-specific setup script or build-time helper permission changes are needed.
+
+At startup the module runs required setup as container root. It removes the
+mapping helpers' setuid/setgid bits and grants the limited file capabilities
+`cap_setuid=ep` and `cap_setgid=ep` in the container's writable layer. It derives
+`/etc/subuid` and `/etc/subgid` from the outer container's actual mappings,
+excluding outer root and the workspace user's own IDs. Setup is repeated safely
+for each new container, preserves other users' subordinate ID entries, and fails
+startup if dependencies or permissions are missing.
+
+The module disables inner cgroup management and defaults inner networking to
+`host`. Here `host` means the outer workspace network namespace. Nested
+containers therefore share the workspace's network, including its private
+workspace bridge when enabled. Explicit inner network settings can override this
+and use the supplied TUN device. Remote-engine environment defaults are cleared
+so Podman uses the nested local engine. The module does not change registry
+search configuration or install packages automatically.
+
 ### `[modules.podman_socket]`
 
 Mounts the host rootless Podman socket into the container for Docker-compatible container management from within the container.
@@ -641,3 +678,28 @@ config  = "secrets-config.toml"
 ```
 
 See [default.toml.example](../default.toml.example) for a more complete annotated example.
+
+### `[modules.systemd]`
+
+```toml
+[modules.systemd]
+enabled = true
+```
+
+Runs `/sbin/init` as container root with Podman's systemd mode and a private
+cgroup namespace. Requires Linux, `container.userns = "keep-id"`, and an image
+with systemd and `systemctl` installed (Fedora: `dnf install systemd`). Omit
+`container.command`, or set it to `["/sbin/init"]`; other commands are rejected.
+The module disables SELinux container labeling to allow systemd cgroup access.
+It does not enable privileged mode or change the configured network.
+
+Startup waits for systemd to report `running` or `degraded`, within
+`container.startup_timeout_secs`. A degraded system can have failed units;
+inspect them with `systemctl --failed`. Readiness completes before nested Podman
+setup, configured startup hooks, and managed home initialization.
+
+`enclo enter` and `enclo exec` still default to the host workspace UID/GID;
+use `enclo exec --user root -- systemctl ...` for system administration.
+Systemd runs as root inside the container's user namespace; host Podman remains
+rootless. This module starts the system manager, not a persistent per-user
+`systemctl --user` manager. It works alongside `[modules.nested_podman]`.

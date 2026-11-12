@@ -5,10 +5,12 @@ mod docker_socket;
 mod drm;
 mod gpg_agent;
 mod nvidia;
+mod nested_podman;
 mod podman_socket;
 mod secrets;
 mod ssh_agent;
 mod support;
+mod systemd;
 mod terminfo;
 mod wayland;
 mod xdg_open;
@@ -20,9 +22,11 @@ pub use docker_socket::DockerSocket;
 pub use drm::Drm;
 pub use gpg_agent::GpgAgent;
 pub use nvidia::Nvidia;
+pub use nested_podman::NestedPodman;
 pub use podman_socket::PodmanSocket;
 pub use secrets::Secrets;
 pub use ssh_agent::SshAgent;
+pub use systemd::Systemd;
 pub use terminfo::Terminfo;
 pub use wayland::Wayland;
 pub use xdg_open::XdgOpen;
@@ -33,7 +37,9 @@ use std::sync::Arc;
 pub fn build_registry(config: &Config) -> Vec<Arc<dyn Module>> {
     let m = &config.modules;
     vec![
+        Arc::new(Systemd::new(config)),
         Arc::new(PodmanSocket::new(m.podman_socket.clone())),
+        Arc::new(NestedPodman::new(config)),
         Arc::new(DockerSocket::new(m.docker_socket.clone())),
         Arc::new(DbusProxy::new(m.dbus_proxy.clone())),
         Arc::new(GpgAgent::new(m.gpg_agent.clone())),

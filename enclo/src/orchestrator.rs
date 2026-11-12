@@ -208,7 +208,8 @@ impl Orchestrator {
                 &setup.combined.post_start_cmds,
                 ready.is_some()
                     || config.container.home.enabled
-                    || !config.container.post_start.is_empty(),
+                    || !config.container.post_start.is_empty()
+                    || !setup.combined.required_post_start_cmds.is_empty(),
                 u64::from(config.container.startup_timeout_secs.get()),
                 &mut container_proc,
             )
@@ -220,7 +221,7 @@ impl Orchestrator {
         }
 
         let configured_hooks = async {
-            for hook in &config.container.post_start {
+            for hook in setup.combined.required_post_start_cmds.iter().chain(&config.container.post_start) {
                 anyhow::ensure!(
                     !hook.args.is_empty(),
                     "container.post_start command cannot be empty"
@@ -527,7 +528,7 @@ fn build_podman_run_args(config: &Config, ctx: &Context, output: &ModuleOutput) 
 
     args.push(config.container.image.clone().into());
 
-    for part in &config.container.command {
+    for part in output.container_command.as_ref().unwrap_or(&config.container.command) {
         args.push(part.into());
     }
 
