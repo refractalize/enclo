@@ -1,0 +1,25 @@
+[container]
+image = "localhost/enclo-systemd-test:latest"
+
+[ssh]
+user = "developer"
+
+[systemd]
+enabled = true
+# Podman supplies DNS; the host handles memory pressure.
+mask = [
+  "systemd-oomd.service",
+  "systemd-oomd.socket",
+  "systemd-resolved.service",
+  "systemd-resolved-monitor.socket",
+  "systemd-resolved-varlink.socket",
+]
+
+# Persistent, initially empty home owned by the image SSH user.
+[home]
+enabled = true
+
+# Optional: runs once successfully, before services are connected.
+# [home.init]
+# command = "cp -an /etc/skel/. ."
+# timeout_secs = 300

@@ -17,7 +17,7 @@ use auth::ProxyAuth;
 use plain::BoxResponse;
 
 pub async fn handle_request(
-    req: Request<Incoming>,
+    mut req: Request<Incoming>,
     config: Arc<Config>,
     store: Arc<StoreStack>,
     tls: Arc<TlsState>,
@@ -29,6 +29,9 @@ pub async fn handle_request(
             return Ok(auth::proxy_auth_required());
         }
     }
+
+    // Credentials for this proxy must never be forwarded to an upstream server.
+    req.headers_mut().remove(::http::header::PROXY_AUTHORIZATION);
 
     if req.method() == Method::CONNECT {
         Ok(handle_connect(req, config, store, tls).await)

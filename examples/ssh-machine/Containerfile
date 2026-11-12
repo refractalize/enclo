@@ -1,0 +1,13 @@
+FROM fedora:44
+
+ARG DEV_USER=developer
+ARG DEV_UID=1000
+RUN dnf install -y --setopt=install_weak_deps=False openssh-server openssh-clients shadow-utils bash procps-ng sudo \
+    && dnf clean all \
+    && useradd --create-home --uid "${DEV_UID}" --shell /bin/bash --password '*' "${DEV_USER}" \
+    && printf '%s ALL=(ALL) NOPASSWD: ALL\n' "${DEV_USER}" > /etc/sudoers.d/developer \
+    && chmod 0440 /etc/sudoers.d/developer \
+    && rm -f /etc/ssh/ssh_host_*key*
+
+# Enclo supplies the key-generation/sshd bootstrap and Podman --init.
+CMD ["/usr/sbin/sshd", "-D", "-e"]

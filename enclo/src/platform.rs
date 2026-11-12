@@ -72,10 +72,6 @@ impl PlatformSupport {
         }
     }
 
-    pub fn config_dir(&self, home: &Path) -> PathBuf {
-        self.config_home(home).join("enclo")
-    }
-
     pub fn session_bus_socket_path(&self, runtime_dir: &Path) -> PathBuf {
         runtime_dir.join("bus")
     }

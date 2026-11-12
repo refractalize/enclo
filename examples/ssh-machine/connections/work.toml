@@ -1,0 +1,10 @@
+[target]
+container = "dev"
+
+# A host HTTP service can be forwarded once you start it separately:
+# [[forwards]]
+# direction = "remote"
+# spec = "127.0.0.1:8080:127.0.0.1:18080"
+
+# [session]
+# workdir = "/workspace"

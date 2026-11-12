@@ -1,0 +1,19 @@
+[container]
+image = "localhost/enclo-ssh-test:latest"
+# volumes = ["/absolute/host/workspace:/workspace"]
+# env = ["LANG=C.UTF-8"]
+# devices = ["/dev/dri"]
+# keep_groups = true
+
+[ssh]
+# This account must exist in the image with your host UID.
+user = "developer"
+
+# Persistent, initially empty home owned by the image SSH user.
+[home]
+enabled = true
+
+# Optional: runs once successfully, before services are connected.
+# [home.init]
+# command = "cp -an /etc/skel/. ."
+# timeout_secs = 300

@@ -42,6 +42,14 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Validate configuration and proxy CA without starting credential backends.
+    Check {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        listen: Option<std::net::SocketAddr>,
+    },
+
     /// Generate a local CA certificate and private key for the HTTPS proxy.
     GenCa {
         /// Destination directory [default: ~/.config/enclo/certs]. Existing files are never overwritten.
@@ -51,6 +59,10 @@ enum Command {
 
     /// Run the server
     Serve {
+        /// Private readiness marker for a supervising process (must not exist).
+        #[arg(long)]
+        ready_file: Option<PathBuf>,
+
         /// Host credential service: serve only a private, unrestricted store socket.
         #[arg(long, requires = "socket", conflicts_with_all = ["store_socket", "listen", "listen_fd"])]
         store_only: bool,
@@ -145,6 +157,20 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
+        Command::Check { config, listen } => {
+            let config = config::Config::from_file_with_listen(&config, listen)?;
+            for route in &config.store.routes {
+                anyhow::ensure!(config.store.backend(&route.backend).is_some(), "route references unknown backend '{}'", route.backend);
+                config.store.route_cache(route)?;
+            }
+            if config.proxy.enabled {
+                let _ = rustls::crypto::ring::default_provider().install_default();
+                let tls = config.proxy.tls.as_ref().unwrap();
+                tls::TlsState::load(&tls.ca_cert, &tls.ca_key)?;
+            }
+            Ok(())
+        }
+
         Command::GenCa { output_dir } => {
             let output_dir = match output_dir {
                 Some(path) => path,
@@ -158,7 +184,7 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Command::GenerateBasicAuth { username } => cmd_generate_basic_auth(&username),
-        Command::Serve { config, socket, username, password_hash, listen, listen_fd, store_only, store_socket } => {
+        Command::Serve { config, socket, username, password_hash, listen, listen_fd, store_only, store_socket, ready_file } => {
             let cli_auth = match (username, password_hash) {
                 (Some(username), Some(password_hash)) => {
                     Some(config::ProxyAuthConfig { username, password_hash })
@@ -167,7 +193,7 @@ async fn main() -> anyhow::Result<()> {
             };
             let config_path = config.unwrap_or_else(default_config_path);
             let inherited = listen_fd.map(inherit_listener).transpose()?;
-            run(config_path, socket, cli_auth, listen, inherited, store_only, store_socket).await
+            run(config_path, socket, cli_auth, listen, inherited, store_only, store_socket, ready_file).await
         }
     }
 }
@@ -229,6 +255,7 @@ async fn run(
     inherited_listener: Option<std::net::TcpListener>,
     store_only: bool,
     store_socket: Option<PathBuf>,
+    ready_file: Option<PathBuf>,
 ) -> anyhow::Result<()> {
     rustls::crypto::ring::default_provider()
         .install_default()
@@ -276,6 +303,13 @@ async fn run(
     } else {
         None
     };
+
+    if let Some(path) = ready_file {
+        use std::os::unix::fs::OpenOptionsExt;
+        // The supervisor separately probes the enabled Unix socket. The proxy
+        // listener and TLS configuration have already been prepared above.
+        std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(path)?;
+    }
 
     // --- Socket server ---
     if config.secrets.socket.enabled {

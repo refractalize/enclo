@@ -10,6 +10,11 @@ use std::path::PathBuf;
 
 use enclo_backend_protocol::DEFAULT_SECRETS_SOCKET;
 
+fn default_socket() -> PathBuf {
+    std::env::var_os("ENCLO_SECRETS_SOCKET").filter(|v| !v.is_empty())
+        .map(PathBuf::from).unwrap_or_else(|| PathBuf::from(DEFAULT_SECRETS_SOCKET))
+}
+
 #[derive(Parser)]
 #[command(name = "enclo", about = "enclo container client")]
 struct Cli {
@@ -27,7 +32,7 @@ enum Command {
     /// Fetch one or more secrets and print them as a JSON object to stdout
     Get {
         /// Path to the enclo-secrets Unix socket
-        #[arg(long, short = 's', default_value = DEFAULT_SECRETS_SOCKET)]
+        #[arg(long, short = 's', default_value_os_t = default_socket())]
         socket: PathBuf,
 
         /// Path to the client config file (default: $XDG_CONFIG_HOME/enclo/client.toml)
@@ -49,7 +54,7 @@ enum Command {
     /// Fetch secrets and run a command with them set as environment variables
     Run {
         /// Path to the enclo-secrets Unix socket
-        #[arg(long, short = 's', default_value = DEFAULT_SECRETS_SOCKET)]
+        #[arg(long, short = 's', default_value_os_t = default_socket())]
         socket: PathBuf,
 
         /// Path to the client config file (default: $XDG_CONFIG_HOME/enclo/client.toml)
@@ -86,7 +91,7 @@ enum AuthCommand {
     Setup {
         #[arg(value_parser = ["codex"])]
         provider: String,
-        #[arg(long, default_value = enclo_backend_protocol::DEFAULT_SECRETS_SOCKET)]
+        #[arg(long, default_value_os_t = default_socket())]
         socket: PathBuf,
     },
 }

@@ -1,0 +1,24 @@
+[container]
+image = "localhost/enclo-nested-test:latest"
+# volumes = ["/absolute/host/project:/workspace"]
+
+[ssh]
+user = "developer"
+
+[home]
+enabled = true
+
+[nested_podman]
+enabled = true
+
+# Optional local hardware, requiring host devices/CDI setup:
+# [gpu]
+# nvidia = ["all"]
+# drm = true
+
+# Optional local desktop; the services supervisor owns these resources:
+# [desktop]
+# wayland = true
+# [desktop.dbus]
+# enabled = true
+# talk = ["org.freedesktop.portal.Desktop"]

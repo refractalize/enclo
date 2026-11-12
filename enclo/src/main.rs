@@ -23,11 +23,16 @@ use config::Config;
 use context::Context;
 use modules::build_registry;
 use orchestrator::Orchestrator;
-use platform::PlatformSupport;
 
 #[derive(Parser)]
 #[command(name = "enclo", about = "Modular rootless container launcher")]
 struct Cli {
+    /// Enclo configuration root (overrides ENCLO_CONFIG_DIR)
+    #[arg(long, global = true)]
+    config_dir: Option<PathBuf>,
+    /// Persistent state root (overrides ENCLO_STATE_DIR)
+    #[arg(long, global = true)]
+    state_dir: Option<PathBuf>,
     #[command(flatten)]
     target: TargetArgs,
 
@@ -67,6 +72,49 @@ impl TargetArgs {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Local Podman machine lifecycle (run/reload retain the legacy backend)
+    Container {
+        #[command(subcommand)]
+        action: ContainerAction,
+        #[arg(long, global = true)]
+        runtime_dir: Option<PathBuf>,
+    },
+    /// Control a named SSH services supervisor without the installed daemon
+    Services {
+        #[arg(long, global = true)]
+        profile: Option<PathBuf>,
+        /// Runtime parent directory (overrides ENCLO_RUNTIME_DIR)
+        #[arg(long, global = true)]
+        runtime_dir: Option<PathBuf>,
+        #[arg(long, hide = true, global = true)]
+        startup_fd: Option<i32>,
+        #[command(subcommand)]
+        action: ServicesAction,
+    },
+    /// List or explicitly terminate SSH sessions, even when services are stopped
+    Sessions {
+        #[arg(long, global = true)]
+        profile: Option<PathBuf>,
+        /// Runtime parent directory (overrides ENCLO_RUNTIME_DIR)
+        #[arg(long, global = true)]
+        runtime_dir: Option<PathBuf>,
+        #[command(subcommand)]
+        action: SessionAction,
+    },
+    /// Open an independent shell/command using an established connection profile
+    Session {
+        /// Named profile from the central connections directory
+        name: Option<String>,
+        /// Same connection TOML file used by the running services supervisor
+        #[arg(long)]
+        profile: Option<PathBuf>,
+        /// Runtime parent directory (overrides ENCLO_RUNTIME_DIR; same as services run)
+        #[arg(long)]
+        runtime_dir: Option<PathBuf>,
+        /// Remote command and literal arguments; omit for an interactive shell
+        #[arg(last = true)]
+        cmd: Vec<String>,
+    },
     /// Manage host-side credentials dedicated to Enclo containers
     Auth {
         #[command(subcommand)]
@@ -158,6 +206,79 @@ enum AuthCommand {
     },
 }
 
+#[derive(Args)]
+struct ConnectionName {
+    name: Option<String>,
+}
+
+#[derive(Subcommand)]
+enum ContainerAction {
+    /// Initialize a managed home; --rerun explicitly reapplies the configured script
+    HomeInit { name: String, #[arg(long)] rerun: bool },
+    Run(ConnectionName),
+    Start(ConnectionName),
+    Status(ConnectionName),
+    List,
+    Stop { name: Option<String>, #[arg(long)] force: bool },
+    Restart { name: Option<String>, #[arg(long)] force: bool },
+    Reload(ConnectionName),
+    /// Discard the writable layer; keep named volumes and SSH identity
+    Remove { name: String, #[arg(long, help = "Allow removing a running container, disconnecting its sessions")] force: bool },
+    /// Replace with current config/image; discard writable layer, keep named volumes
+    Recreate { name: String, #[arg(long, help = "Allow replacing a running container, disconnecting its sessions")] force: bool },
+}
+
+// The foreground legacy runner is retained for migration. The other grouped
+// commands use the local SSH machine backend without the installed daemon.
+
+fn normalize_container(mut cli: Cli) -> Result<Cli> {
+    let legacy = match &cli.command {
+        Command::Container { action: ContainerAction::Run(selected), .. } => Some((false, selected.name.clone())),
+        Command::Container { action: ContainerAction::Reload(selected), .. } => Some((true, selected.name.clone())),
+        _ => None,
+    };
+    if let Some((reload, name)) = legacy {
+        if let Command::Container { runtime_dir, .. } = &cli.command {
+            anyhow::ensure!(runtime_dir.is_none(), "legacy container run/reload do not support --runtime-dir; use XDG_RUNTIME_DIR for foreground legacy testing");
+        }
+        if let Some(name) = name {
+            anyhow::ensure!(!cli.target.is_explicit(), "choose a container name or a target selector, not both");
+            enclo::profiles::validate_name(&name)?;
+            cli.target.container = Some(name);
+        }
+        cli.command = if reload { Command::Reload } else { Command::Run };
+    }
+    Ok(cli)
+}
+
+#[derive(Subcommand)]
+enum ServicesAction {
+    /// Start a detached supervisor and wait for readiness
+    Start { name: Option<String>, #[arg(long, default_value = "600")] timeout_secs: std::num::NonZeroU64 },
+    /// List all running connection supervisors
+    List,
+    /// Run the services supervisor in the foreground
+    Run(ConnectionName),
+    Status(ConnectionName),
+    Stop(ConnectionName),
+    /// Validate and apply the profile, reconnecting the services transport
+    Reload(ConnectionName),
+}
+
+#[derive(Subcommand)]
+enum SessionAction {
+    List(ConnectionName),
+    Stop {
+        #[arg(long)]
+        connection: Option<String>,
+        #[arg(required_unless_present = "all", conflicts_with = "all")]
+        id: Option<String>,
+        /// Stop a snapshot of all sessions registered for this profile
+        #[arg(long)]
+        all: bool,
+    },
+}
+
 #[derive(Clone, clap::ValueEnum)]
 enum AuthProvider {
     Codex,
@@ -173,11 +294,10 @@ enum HomeCommand {
     },
 }
 
+static CONFIG_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
 fn config_dir() -> PathBuf {
-    let home = std::env::var("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("/root"));
-    PlatformSupport::current().config_dir(&home)
+    CONFIG_DIR.get().cloned().unwrap_or_else(|| enclo::profiles::config_dir(None))
 }
 
 struct LoadedTarget {
@@ -196,10 +316,166 @@ async fn main() -> Result<()> {
         )
         .init();
 
-    let cli = Cli::parse();
+    let cli = normalize_container(Cli::parse())?;
     cli.target.validate()?;
+    let mut config_root = enclo::profiles::config_dir(cli.config_dir.as_deref());
+    if config_root.is_relative() {
+        config_root = std::env::current_dir()?.join(config_root);
+    }
+    CONFIG_DIR.set(config_root).expect("configuration root initialized once");
 
     match cli.command {
+        Command::Container { action, runtime_dir } => {
+            anyhow::ensure!(!cli.target.is_explicit(), "container commands take a name; use top-level run for legacy configs");
+            let (operation, name, force) = match action {
+                ContainerAction::HomeInit { name, rerun } => ("home-init", Some(name), rerun),
+                ContainerAction::Start(selected) => ("start", selected.name, false),
+                ContainerAction::Status(selected) => ("status", selected.name, false),
+                ContainerAction::Stop { name, force } => ("stop", name, force),
+                ContainerAction::Restart { name, force } => ("restart", name, force),
+                ContainerAction::Remove { name, force } => ("remove", Some(name), force),
+                ContainerAction::Recreate { name, force } => ("recreate", Some(name), force),
+                ContainerAction::List => {
+                    println!("{}", serde_json::to_string_pretty(&enclo::local_container::LocalContainer::list(&config_dir()).await?)?);
+                    return Ok(());
+                }
+                ContainerAction::Run(_) | ContainerAction::Reload(_) => anyhow::bail!("use container start for independent SSH machines; top-level run/reload retain the legacy backend"),
+            };
+            let name = name.ok_or_else(|| anyhow::anyhow!("a container name is required"))?;
+            let machine = enclo::local_container::LocalContainer::new(&name, &config_dir(), runtime_dir.as_deref(), cli.state_dir.as_deref())?;
+            if operation == "home-init" {
+                println!("{}", serde_json::to_string_pretty(&machine.home_init(force).await?)?);
+                return Ok(());
+            }
+            if operation == "remove" {
+                machine.remove(force).await?;
+                println!("null");
+                return Ok(());
+            }
+            if operation == "recreate" {
+                let endpoint = machine.recreate(force).await?;
+                println!("{}", serde_json::to_string_pretty(&endpoint)?);
+                return Ok(());
+            }
+            if operation == "stop" || operation == "restart" {
+                // Stopping the machine necessarily kills its SSH sessions.
+                if !force {
+                    if let Some(endpoint) = machine.status().await? {
+                        let target = format!("enclo-{}", endpoint.container_id);
+                        let sessions = enclo::session_registry::list_all(runtime_dir.as_deref()).await?;
+                        anyhow::ensure!(!sessions.iter().any(|s| s.session.target == target), "container has active sessions; close them or use --force");
+                    }
+                }
+                machine.stop().await?;
+            }
+            let status = if operation == "start" || operation == "restart" { Some(machine.start().await?) } else { machine.status().await? };
+            println!("{}", serde_json::to_string_pretty(&status)?);
+            Ok(())
+        },
+        Command::Services {
+            profile,
+            runtime_dir,
+            startup_fd,
+            action,
+        } => {
+            anyhow::ensure!(
+                !cli.target.is_explicit(),
+                "services uses --profile, not container selectors"
+            );
+            anyhow::ensure!(startup_fd.is_none() || matches!(action, ServicesAction::Run(_)), "internal startup FD applies only to services run");
+            if let ServicesAction::Start { name, timeout_secs } = &action {
+                let path = enclo::profiles::connection(&config_dir(), name.as_deref(), profile.as_deref())?;
+                let status = enclo::connection::supervisor::start(&path, runtime_dir.as_deref(), &config_dir(), cli.state_dir.as_deref(), std::time::Duration::from_secs(timeout_secs.get())).await?;
+                println!("{}", serde_json::to_string_pretty(&status)?);
+                return Ok(());
+            }
+            if matches!(action, ServicesAction::List) {
+                anyhow::ensure!(profile.is_none(), "services list does not accept --profile");
+                let mut statuses = Vec::new();
+                for name in enclo::connection_runtime::discover(runtime_dir.as_deref())? {
+                    let path = PathBuf::from(format!("{name}.toml"));
+                    let mut status = enclo::connection::supervisor::request(&path, runtime_dir.as_deref(), "status").await?;
+                    if status["supervisor_running"] == true {
+                        status["connection"] = serde_json::Value::String(name);
+                        statuses.push(status);
+                    }
+                }
+                println!("{}", serde_json::to_string_pretty(&statuses)?);
+                return Ok(());
+            }
+            let (operation, selected) = match action {
+                ServicesAction::List | ServicesAction::Start { .. } => unreachable!(),
+                ServicesAction::Run(selected) => ("run", selected),
+                ServicesAction::Status(selected) => ("status", selected),
+                ServicesAction::Stop(selected) => ("stop", selected),
+                ServicesAction::Reload(selected) => ("reload", selected),
+            };
+            let profile = enclo::profiles::connection(&config_dir(), selected.name.as_deref(), profile.as_deref())?;
+            if operation == "run" {
+                enclo::connection::supervisor::run_with_startup(&profile, runtime_dir.as_deref(), &config_dir(), cli.state_dir.as_deref(), startup_fd).await
+            } else {
+                let status = enclo::connection::supervisor::request(
+                    &profile, runtime_dir.as_deref(), operation,
+                ).await?;
+                println!("{}", serde_json::to_string_pretty(&status)?);
+                Ok(())
+            }
+        }
+        Command::Sessions {
+            profile,
+            runtime_dir,
+            action,
+        } => {
+            anyhow::ensure!(
+                !cli.target.is_explicit(),
+                "sessions uses --profile, not container selectors"
+            );
+            let selected = match &action {
+                SessionAction::List(selected) => selected.name.as_deref(),
+                SessionAction::Stop { connection, .. } => connection.as_deref(),
+            };
+            if selected.is_none() && profile.is_none() {
+                match &action {
+                    SessionAction::List(_) => println!("{}", serde_json::to_string_pretty(&enclo::session_registry::list_all(runtime_dir.as_deref()).await?)?),
+                    SessionAction::Stop { id: Some(id), .. } => enclo::session_registry::stop_by_id(id, runtime_dir.as_deref()).await?,
+                    _ => anyhow::bail!("bulk stop requires --connection NAME or --profile FILE"),
+                }
+                return Ok(());
+            }
+            let profile = enclo::profiles::connection(&config_dir(), selected, profile.as_deref())?;
+            let registry = enclo::session_registry::Registry::resolve(&profile, runtime_dir.as_deref())?;
+            match action {
+                SessionAction::List(_) => {
+                    println!("{}", serde_json::to_string_pretty(&registry.list().await?)?);
+                }
+                SessionAction::Stop { id: Some(id), .. } => registry.stop(&id).await?,
+                SessionAction::Stop { all: true, .. } => {
+                    let mut errors = Vec::new();
+                    for session in registry.list().await? {
+                        if let Err(error) = registry.stop(&session.id).await {
+                            errors.push(format!("{}: {error:#}", session.id));
+                        }
+                    }
+                    anyhow::ensure!(errors.is_empty(), "{}", errors.join("\n"));
+                }
+                _ => anyhow::bail!("specify a session ID or --all"),
+            }
+            Ok(())
+        }
+        Command::Session {
+            name,
+            profile,
+            runtime_dir,
+            cmd,
+        } => {
+            anyhow::ensure!(
+                !cli.target.is_explicit(),
+                "session uses --profile, not container selectors"
+            );
+            let profile = enclo::profiles::connection(&config_dir(), name.as_deref(), profile.as_deref())?;
+            let code = enclo::connection::shell(&profile, runtime_dir.as_deref(), &config_dir(), cli.state_dir.as_deref(), cmd).await?;
+            std::process::exit(code);
+        }
         Command::Auth {
             command:
                 AuthCommand::Login {
@@ -559,6 +835,53 @@ fn resolve_exec_workdir(config_workdir: &Option<String>, ctx: &Context) -> Strin
 #[cfg(test)]
 mod cli_tests {
     use super::*;
+
+    #[test]
+    fn named_container_commands_use_independent_backend() {
+        let cli = Cli::try_parse_from(["enclo", "container", "start", "dev", "--runtime-dir", "/tmp/enclo-test"]).unwrap();
+        assert!(matches!(cli.command, Command::Container { action: ContainerAction::Start(ConnectionName { name: Some(name) }), runtime_dir: Some(root) } if name == "dev" && root == std::path::Path::new("/tmp/enclo-test")));
+        assert!(matches!(Cli::try_parse_from(["enclo", "start", "-C", "dev"]).unwrap().command, Command::Start));
+    }
+
+    #[test]
+    fn named_connections_and_global_discovery_parse() {
+        assert!(matches!(Cli::try_parse_from(["enclo", "services", "run", "work"]).unwrap().command,
+            Command::Services { action: ServicesAction::Run(ConnectionName { name: Some(name) }), .. } if name == "work"));
+        assert!(matches!(Cli::try_parse_from(["enclo", "session", "work", "--", "echo", "arg"]).unwrap().command,
+            Command::Session { name: Some(name), cmd, .. } if name == "work" && cmd == ["echo", "arg"]));
+        for args in [vec!["enclo", "services", "list"], vec!["enclo", "sessions", "list"], vec!["enclo", "sessions", "list", "work"], vec!["enclo", "sessions", "stop", "--connection", "work", "--all"]] {
+            assert!(Cli::try_parse_from(args).is_ok());
+        }
+    }
+
+    #[test]
+    fn services_run_and_session_preserve_remote_arguments() {
+        for args in [
+            vec!["enclo", "services", "run", "--profile", "dev.toml"],
+            vec!["enclo", "services", "--profile", "dev.toml", "run"],
+        ] {
+            assert!(matches!(Cli::try_parse_from(args).unwrap().command,
+                Command::Services { action: ServicesAction::Run(_), .. }));
+        }
+        let parsed = Cli::try_parse_from([
+            "enclo", "session", "--profile", "dev.toml", "--",
+            "command", "arg1", "two words", "--profile", "literal", "$(false)",
+        ]).unwrap();
+        match parsed.command {
+            Command::Session { profile, cmd, .. } => {
+                assert_eq!(profile, Some(PathBuf::from("dev.toml")));
+                assert_eq!(cmd, ["command", "arg1", "two words", "--profile", "literal", "$(false)"]);
+            }
+            _ => panic!("expected session"),
+        }
+        assert!(matches!(Cli::try_parse_from(["enclo", "session", "--profile", "dev.toml"]).unwrap().command,
+            Command::Session { cmd, .. } if cmd.is_empty()));
+        for command in ["connect", "ssh"] {
+            assert!(Cli::try_parse_from(["enclo", command, "--profile", "dev.toml"]).is_err());
+        }
+        assert!(Cli::try_parse_from(["enclo", "services", "start", "--profile", "dev.toml"]).is_ok());
+        assert!(Cli::try_parse_from(["enclo", "services", "start", "work", "--timeout-secs", "0"]).is_err());
+    }
 
     #[test]
     fn selectors_work_before_after_and_with_nested_commands() {

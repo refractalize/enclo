@@ -31,6 +31,16 @@ A built-in secrets service (`enclo-secrets`) provides an in-container Unix socke
 - **Daemon mode** — Linux D-Bus daemon (`org.enclo.Manager`) or macOS Unix socket daemon for start/stop/status
 - **Hot reload** — `enclo reload` sends SIGHUP to modules that support it (secrets, proxy)
 
+## SSH machine backend
+
+The new backend separates container lifetime, shared service connections and
+individual SSH sessions. It supports persistent homes, optional systemd, nested
+Podman, NVIDIA/DRM devices, and optional local Wayland/filtered D-Bus integration.
+See the [architecture and command guide](docs/ssh-environments.md) and
+[agent profile-migration guide](docs/migrate-ssh-profiles.md). The module/daemon
+workflow documented below remains available for existing installations. Profile
+migration is manual; it does not require installing the checkout on the host.
+
 ## Build and installation
 
 Where Rust is available, build and install in one step:
@@ -135,6 +145,7 @@ enclo run GITHUB_TOKEN -- npm publish
 | [docs/commands.md](docs/commands.md) | Host-side `enclo` CLI reference |
 | [docs/container-commands.md](docs/container-commands.md) | In-container `enclo` CLI reference |
 | [docs/architecture.md](docs/architecture.md) | Architecture diagrams |
+| [docs/ssh-environments.md](docs/ssh-environments.md) | Experimental foreground SSH connections and the lifecycle migration |
 
 Man pages: `man enclo` and `man enclo-container` after copying from `man/` to a directory on `$MANPATH`.
 

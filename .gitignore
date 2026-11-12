@@ -15,6 +15,10 @@ mise.*.local.toml
 .mise.local.toml
 .mise.*.local.toml
 
+# Checkout-local test configuration, credentials and runtime files.
+/.enclo-config/
+/.enclo-runtime/
+
 # Local credentials and private key material.
 .aws/
 .ssh/
@@ -25,3 +29,5 @@ mise.*.local.toml
 id_rsa
 id_ecdsa
 id_ed25519
+
+/.enclo-state/
