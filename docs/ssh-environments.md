@@ -136,8 +136,10 @@ mask = ["systemd-oomd.service", "systemd-oomd.socket"]
 
 This requires `/sbin/init`, `systemctl`, and the other systemd image dependencies.
 Masks are applied inside the container with `systemctl --root=/ mask` **before**
-executing systemd on every boot, including a Podman restart. The mask list defaults
-to empty; specifying masks with systemd disabled is rejected. Unit names must be
+executing systemd on every boot, including a Podman restart. Enclo always masks
+`sshd.service`, `sshd.socket`, `ssh.service`, and `ssh.socket` so an image's default
+SSH listener cannot take port 22 away from `enclo-sshd.service`. The additional
+mask list defaults to empty; specifying masks with systemd disabled is rejected. Unit names must be
 literal names, not paths/options/patterns. Masking `enclo-sshd.service` is rejected.
 Masks baked into an image remain in effect too.
 
@@ -174,6 +176,12 @@ for this initial local backend, as in
 the existing systemd module. Outbound internet access remains available.
 Container names and ownership labels include a hash of the canonical config
 root, keeping test configurations separate from the installed environment.
+Set `[container] hostname = "forbes"` to choose the hostname visible inside the
+container. Enclo passes it to Podman at creation; no privileged mode is needed.
+Omitting it keeps Podman's default. Hostnames accept ASCII letters, digits,
+internal hyphens and dot-separated labels, up to 64 characters in total (63 per
+label). This does not change the connection name, Podman name, or exported SSH
+alias. Changing it requires recreation.
 Existing containers are inspected, never silently recreated. `start` rejects a
 changed machine config; use `recreate` to apply it. `restart` retains the existing
 writable filesystem and does not apply changed configuration.
@@ -807,6 +815,53 @@ therefore tolerate partial completion. The timeout defaults to 300 seconds.
 Add `--managed-home` to the local-machine smoke test to check ownership,
 permissions, once-only initialization, explicit rerun, and persistence through
 recreation alongside SSH services and optional synthetic secrets.
+
+## Per-container initialization
+
+Use `container.init` for machine setup that must be repeated after recreation,
+independently of the persistent home's initialization checkpoint:
+
+```toml
+[container.init]
+user = "root"
+command = "loginctl enable-linger tim"
+timeout_secs = 60
+```
+
+The account must already exist in the image. `user` defaults to `root` and
+`timeout_secs` to 60 (positive integer seconds). The command runs through
+`sh -eu -c`, with working directory `/`, and HOME/USER/LOGNAME set for that
+account. It has the container's environment, without connection secrets/proxy
+settings. This example requires systemd mode and an image with `loginctl`.
+
+Startup completes systemd/SSH provisioning, nested-Podman setup, and `home.init`
+before running this hook; it verifies SSH readiness afterward. Thus dotfiles and
+user units installed by home initialization are present before lingering starts
+the user's service manager. The hook also works without a managed home or without
+systemd when its commands do not need them.
+
+Successful completion is recorded at `/var/lib/enclo/container-init` in the
+container, with the instance ID and a digest of the command and account. Ordinary
+stop/start skips it; recreation runs it again. Changes to the hook do not require
+recreation and do not silently rerun a completed script. To apply them explicitly:
+
+```sh
+enclo container init dev --rerun
+```
+
+`container init dev` runs a pending hook on an existing running container, or
+skips a completed one. Both forms ensure home initialization has completed first.
+Other lifecycle configuration changes still require recreation. Initialization
+is serialized with other lifecycle operations.
+
+Failure or timeout stops the container, including its sessions, without recording
+success; the next start retries. Partial effects remain, so scripts should be
+safe to retry. An explicit rerun clears the previous checkpoint before execution.
+Neither hook runs on arbitrary remote SSH hosts.
+
+Add `--container-init` to `scripts/smoke-local-machine.py` to exercise ordering,
+restart, explicit rerun and recreation. With `--systemd`, it also tests lingering
+and verifies that the user's systemd manager is active.
 
 ## Nested Podman, GPUs and local desktop
 

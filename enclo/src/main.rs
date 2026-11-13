@@ -213,6 +213,8 @@ struct ConnectionName {
 
 #[derive(Subcommand)]
 enum ContainerAction {
+    /// Initialize a container instance; --rerun explicitly reapplies the script
+    Init { name: String, #[arg(long)] rerun: bool },
     /// Export SSH settings, or add/update a managed entry in ~/.ssh/config
     Export { name: String, #[arg(long)] host: Option<String>, #[arg(long)] add: bool },
     /// Initialize a managed home; --rerun explicitly reapplies the configured script
@@ -338,6 +340,7 @@ async fn main() -> Result<()> {
             let (operation, name, force) = match action {
                 ContainerAction::Export { .. } => unreachable!(),
                 ContainerAction::HomeInit { name, rerun } => ("home-init", Some(name), rerun),
+                ContainerAction::Init { name, rerun } => ("init", Some(name), rerun),
                 ContainerAction::Start(selected) => ("start", selected.name, false),
                 ContainerAction::Status(selected) => ("status", selected.name, false),
                 ContainerAction::Stop { name, force } => ("stop", name, force),
@@ -352,6 +355,10 @@ async fn main() -> Result<()> {
             };
             let name = name.ok_or_else(|| anyhow::anyhow!("a container name is required"))?;
             let machine = enclo::local_container::LocalContainer::new(&name, &config_dir(), runtime_dir.as_deref(), cli.state_dir.as_deref())?;
+            if operation == "init" {
+                println!("{}", serde_json::to_string_pretty(&machine.container_init(force).await?)?);
+                return Ok(());
+            }
             if operation == "home-init" {
                 println!("{}", serde_json::to_string_pretty(&machine.home_init(force).await?)?);
                 return Ok(());

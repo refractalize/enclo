@@ -23,10 +23,13 @@ import time
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--image', default='localhost/enclo-ssh-test:latest')
+    parser.add_argument('--ssh-user', default='developer', help='existing SSH account in the test image')
     parser.add_argument('--binary', type=Path, default=Path('target/debug/enclo'))
     parser.add_argument('--systemd', action='store_true', help='test the opt-in systemd mode (requires a systemd image)')
+    parser.add_argument('--systemd-mask', action='append', default=[], help='additional image-specific unit to mask in the test container')
     parser.add_argument('--secrets', action='store_true', help='also test the real host secrets/proxy service using synthetic credentials')
     parser.add_argument('--managed-home', action='store_true', help='test persistent home ownership and initialization')
+    parser.add_argument('--container-init', action='store_true', help='test per-instance initialization after home setup; enable lingering in systemd mode')
     parser.add_argument('--nested-podman', action='store_true', help='build and run nested containers without pulls; implies --managed-home')
     parser.add_argument('--nvidia', action='store_true', help='expose NVIDIA CDI GPUs and verify nvidia-smi')
     parser.add_argument('--nested-proc-mount', choices=['private', 'host'], default='private', help='explicit nested proc mode; host exposes outer-container proc')
@@ -35,7 +38,7 @@ def main():
     args = parser.parse_args()
     if args.nested_proc_mount == 'host' and not args.nested_podman:
         parser.error('--nested-proc-mount=host requires --nested-podman')
-    if args.nested_podman:
+    if args.nested_podman or args.container_init:
         args.managed_home = True
     binary = args.binary.resolve(strict=True)
     processes = []
@@ -48,7 +51,7 @@ def main():
         (config / 'connections').mkdir()
         volume = f'enclo-smoke-{root.name}'
         (config / 'containers/dev.toml').write_text(
-            f'[container]\nimage={json.dumps(args.image)}\nvolumes=[{json.dumps(volume + ":/persistent")}]\n[ssh]\nuser="developer"\n')
+            f'[container]\nimage={json.dumps(args.image)}\nvolumes=[{json.dumps(volume + ":/persistent")}]\n[ssh]\nuser={json.dumps(args.ssh_user)}\n')
         if args.fixed_ssh_port:
             with socket.socket() as probe:
                 probe.bind(('127.0.0.1', 0))
@@ -58,6 +61,14 @@ def main():
         if args.managed_home:
             with (config / 'containers/dev.toml').open('a') as stream:
                 stream.write("\n[home]\nenabled=true\n[home.init]\ncommand='echo initialized >> init-count; test $(id -u) = $(stat -c %u .)'\n")
+        if args.container_init:
+            import shlex
+            user = shlex.quote(args.ssh_user)
+            hook = f'test "$(id -u)" = 0; home=$(getent passwd {user} | cut -d: -f6); test -f "$home/init-count"; echo initialized >> /persistent/container-init-count'
+            if args.systemd:
+                hook += f'; loginctl enable-linger {user}'
+            with (config / 'containers/dev.toml').open('a') as stream:
+                stream.write('\n[container.init]\nuser="root"\ncommand=' + json.dumps(hook) + '\n')
         if args.nested_podman:
             with (config / 'containers/dev.toml').open('a') as stream:
                 stream.write(f'\n[nested_podman]\nenabled=true\nproc_mount="{args.nested_proc_mount}"\n')
@@ -69,7 +80,7 @@ def main():
                 stream.write('\n[desktop.dbus]\nenabled=true\n')
         masks = ['systemd-oomd.service', 'systemd-oomd.socket',
                  'systemd-resolved.service', 'systemd-resolved-monitor.socket',
-                 'systemd-resolved-varlink.socket']
+                 'systemd-resolved-varlink.socket'] + args.systemd_mask
         if args.systemd:
             with (config / 'containers/dev.toml').open('a') as stream:
                 stream.write('\n[systemd]\nenabled=true\nmask=' + json.dumps(masks) + '\n')
@@ -237,6 +248,15 @@ def main():
                 report['plain_ssh_client'] = 'user-local executable discovers services without session environment'
 
             assert shell('id', '-u').stdout.strip() == str(os.getuid())
+            if args.container_init:
+                assert shell('cat', '/persistent/container-init-count').stdout == 'initialized\n'
+                cli('container', 'init', 'dev')
+                assert shell('cat', '/persistent/container-init-count').stdout == 'initialized\n'
+                cli('container', 'init', 'dev', '--rerun')
+                assert shell('cat', '/persistent/container-init-count').stdout == 'initialized\ninitialized\n'
+                if args.systemd:
+                    shell('test', '-f', f'/var/lib/systemd/linger/{args.ssh_user}')
+                    assert shell('systemctl', 'is-active', f'user@{os.getuid()}.service').stdout.strip() == 'active'
             if args.nvidia:
                 assert 'GPU' in shell('nvidia-smi', '-L').stdout
                 report['nvidia'] = 'GPU discovered'
@@ -324,6 +344,9 @@ def main():
             restarted = data('container', 'start', 'dev')
             assert restarted['container_id'] == initial['container_id']
             assert restarted['running'] and restarted['port'] > 0
+            if args.container_init:
+                result = subprocess.run(['podman', '--remote=false', 'exec', restarted['container_id'], 'cat', '/persistent/container-init-count'], capture_output=True, text=True, check=True)
+                assert result.stdout == 'initialized\ninitialized\n'
             report['restarted_endpoint'] = restarted
             assert identity == (state / 'client_ed25519').read_bytes()
             assert pinned_key == known_hosts.read_bytes()
@@ -345,6 +368,12 @@ def main():
             recreated = data('container', 'recreate', 'dev')
             supervisor = start_services()
             assert recreated['container_id'] != initial['container_id']
+            if args.container_init:
+                assert shell('cat', '/persistent/container-init-count').stdout == 'initialized\ninitialized\ninitialized\n'
+                if args.systemd:
+                    shell('test', '-f', f'/var/lib/systemd/linger/{args.ssh_user}')
+                    assert shell('systemctl', 'is-active', f'user@{os.getuid()}.service').stdout.strip() == 'active'
+                report['container_init'] = 'runs after home init, skips restart, reruns explicitly and on recreation'
             if args.fixed_ssh_port:
                 assert recreated['port'] == fixed_port
                 # No re-export: the original file must trust only the newly provisioned key.

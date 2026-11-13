@@ -1,5 +1,6 @@
 //! Local Podman machines. No host systemd, D-Bus, or persistent enclo daemon.
 mod features;
+mod init;
 pub mod managed_home;
 mod ssh_export;
 use anyhow::{bail, ensure, Context, Result};
@@ -36,7 +37,11 @@ struct Config {
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Container {
+    #[serde(default, skip_serializing)]
+    init: init::InitConfig,
     image: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    hostname: Option<String>,
     #[serde(default)]
     volumes: Vec<String>,
     #[serde(default)]
@@ -88,13 +93,13 @@ impl Systemd {
     fn bootstrap(&self) -> String {
         if self.enabled {
             let mut script = String::from("set -eu\n");
-            if !self.mask.is_empty() {
-                script.push_str("systemctl --root=/ mask --");
-                for unit in &self.mask {
-                    script.push_str(&format!(" '{unit}'"));
-                }
-                script.push('\n');
+            // Enclo owns port 22 and its authorized-key configuration. Images may
+            // enable a distro SSH daemon (or socket activation) by default.
+            script.push_str("systemctl --root=/ mask -- 'sshd.service' 'sshd.socket' 'ssh.service' 'ssh.socket'");
+            for unit in &self.mask {
+                script.push_str(&format!(" '{unit}'"));
             }
+            script.push('\n');
             script.push_str("exec /sbin/init\n");
             script
         } else {
@@ -207,7 +212,19 @@ impl LocalContainer {
             "invalid SSH user"
         );
         config.systemd.validate()?;
+        if let Some(hostname) = &config.container.hostname {
+            ensure!(
+                hostname.len() <= 64 && hostname.split('.').all(|label| {
+                    !label.is_empty() && label.len() <= 63
+                        && label.as_bytes()[0].is_ascii_alphanumeric()
+                        && label.as_bytes()[label.len() - 1].is_ascii_alphanumeric()
+                        && label.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                }),
+                "container.hostname must be a hostname of at most 64 ASCII characters, with alphanumeric labels separated by dots and optional internal hyphens"
+            );
+        }
         config.home.validate()?;
+        config.container.init.validate()?;
         config.validate_features()?;
         Ok(config)
     }
@@ -367,6 +384,9 @@ impl LocalContainer {
                     .arg(format!("{}:{}:nocopy", home.volume, home.path));
                 cmd.arg("--label")
                     .arg(format!("io.enclo.home={}", serde_json::to_string(home)?));
+            }
+            if let Some(hostname) = &config.container.hostname {
+                cmd.arg("--hostname").arg(hostname);
             }
             if config.systemd.enabled {
                 cmd.arg("--systemd=always");
@@ -536,6 +556,7 @@ impl LocalContainer {
         if let Some(home) = &home {
             self.initialize_home(&config, home, &value, false).await?;
         }
+        self.initialize_container(&config, &value, false).await?;
         let known_hosts = instance.join("known_hosts");
         let pinned = format!("enclo-{id} {} {}\n", parts[0], parts[1]);
         if known_hosts.exists() {

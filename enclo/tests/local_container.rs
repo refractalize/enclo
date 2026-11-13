@@ -83,7 +83,17 @@ elif a[0] in ['start','stop']:
     p.write_text(json.dumps(v))
 elif a[0] == 'ps': print(json.dumps([v] if v else []))
 elif a[0] == 'exec':
-    if 'getent' in a: print(f'dev:x:{os.getuid()}:{os.getgid()}::/home/dev:/bin/sh')
+    if 'getent' in a:
+        print('root:x:0:0::/root:/bin/sh' if a[-1] == 'root' else f'dev:x:{os.getuid()}:{os.getgid()}::/home/dev:/bin/sh')
+    elif 'enclo-container-checkpoint' in a:
+        args=a[a.index('sh'):]
+        args[3]=args[3].replace('/var/lib/enclo',str(root/'checkpoint'))
+        sys.exit(subprocess.run(args).returncode)
+    elif 'enclo-container-init' in a:
+        work=root/'init-work'; work.mkdir(exist_ok=True)
+        assert '--workdir' in a and a[a.index('--workdir')+1]=='/'
+        (root/'hook-user').write_text(a[a.index('--user')+1])
+        sys.exit(subprocess.run(a[a.index('sh'):],cwd=work).returncode)
     elif 'enclo-home-init' in a:
         assert '--workdir' in a and 'HOME=/home/dev' in a
         sys.exit(subprocess.run(a[a.index('sh'):], cwd=root/'home').returncode)
@@ -417,7 +427,7 @@ fn systemd_is_opt_in_and_masks_are_applied_before_init() {
     fixture.ok(&["container", "start", "dev"]);
     let boot = fs::read_to_string(fixture.state().join("bootstrap/boot.sh")).unwrap();
     assert!(boot.contains(
-        "systemctl --root=/ mask -- 'systemd-oomd.service' 'systemd-oomd.socket'\nexec /sbin/init"
+        "systemctl --root=/ mask -- 'sshd.service' 'sshd.socket' 'ssh.service' 'ssh.socket' 'systemd-oomd.service' 'systemd-oomd.socket'\nexec /sbin/init"
     ));
     assert!(fs::read_to_string(fixture.dir.join("unit"))
         .unwrap()
@@ -908,6 +918,91 @@ fn invalid_host_ports_are_rejected_before_podman() {
         let config = f.dir.join("config/containers/dev.toml");
         let original = fs::read_to_string(&config).unwrap();
         fs::write(&config, format!("{original}host_port={value}\n")).unwrap();
+        assert!(!f.run(&["container", "start", "dev"]).status.success());
+        assert!(!f.dir.join("calls").exists());
+    }
+}
+
+#[test]
+fn container_init_follows_home_and_tracks_instance_not_home_lifetime() {
+    let f = Fixture::new();
+    let path = f.dir.join("config/containers/dev.toml");
+    let config = "[container]\nimage='fixture:latest'\n[container.init]\ncommand='test -f ../home/count; echo init >> count'\n[ssh]\nuser='dev'\n[home]\nenabled=true\n[home.init]\ncommand='echo home >> count'\n";
+    fs::write(&path, config).unwrap();
+    f.ok(&["container", "start", "dev"]);
+    assert_eq!(fs::read_to_string(f.dir.join("hook-user")).unwrap(), "0:0");
+    f.ok(&["container", "start", "dev"]);
+    f.ok(&["container", "init", "dev"]);
+    f.ok(&["container", "stop", "dev"]);
+    f.ok(&["container", "start", "dev"]);
+    assert_eq!(fs::read_to_string(f.dir.join("init-work/count")).unwrap(), "init\n");
+    fs::write(&path, config.replace("echo init", "echo changed")).unwrap();
+    f.ok(&["container", "start", "dev"]);
+    assert_eq!(fs::read_to_string(f.dir.join("init-work/count")).unwrap(), "init\n");
+    f.ok(&["container", "init", "dev", "--rerun"]);
+    f.ok(&["container", "recreate", "dev", "--force"]);
+    assert_eq!(fs::read_to_string(f.dir.join("init-work/count")).unwrap(), "init\nchanged\nchanged\n");
+    assert_eq!(fs::read_to_string(f.dir.join("home/count")).unwrap(), "home\n");
+}
+
+#[test]
+fn container_init_failure_and_timeout_stop_machine_and_are_retryable() {
+    for script in ["echo intentional >&2; exit 42", "sleep 2"] {
+        let f = Fixture::new();
+        let path = f.dir.join("config/containers/dev.toml");
+        let config = format!("[container]\nimage='fixture:latest'\n[container.init]\nuser='dev'\ntimeout_secs=1\ncommand='{script}'\n[ssh]\nuser='dev'\n");
+        fs::write(&path, &config).unwrap();
+        let out = f.run(&["container", "start", "dev"]);
+        assert!(!out.status.success());
+        assert!(String::from_utf8_lossy(&out.stderr).contains("container initialization"));
+        assert_eq!(f.ok(&["container", "status", "dev"])["running"], false);
+        assert!(!f.dir.join("checkpoint/container-init").exists());
+        fs::write(&path, config.replace(script, "echo success >> count")).unwrap();
+        f.ok(&["container", "start", "dev"]);
+        assert_eq!(fs::read_to_string(f.dir.join("hook-user")).unwrap(), format!("{}:{}", unsafe { libc::geteuid() }, unsafe { libc::getegid() }));
+        assert!(f.dir.join("checkpoint/container-init").exists());
+        fs::write(&path, config).unwrap();
+        assert!(!f.run(&["container", "init", "dev", "--rerun"]).status.success());
+        assert!(!f.dir.join("checkpoint/container-init").exists());
+    }
+}
+
+#[test]
+fn container_init_rejects_invalid_configuration() {
+    for options in ["timeout_secs=0", "user='--root'", "command=\"bad\\u0000command\""] {
+        let f = Fixture::new();
+        fs::write(f.dir.join("config/containers/dev.toml"), format!("[container]\nimage='fixture:latest'\n[container.init]\n{options}\n[ssh]\nuser='dev'\n")).unwrap();
+        assert!(!f.run(&["container", "start", "dev"]).status.success());
+        assert!(!f.dir.join("calls").exists());
+    }
+}
+
+#[test]
+fn hostname_is_passed_to_podman_and_changes_require_recreation() {
+    let f = Fixture::new();
+    let path = f.dir.join("config/containers/dev.toml");
+    let original = fs::read_to_string(&path).unwrap();
+    f.ok(&["container", "start", "dev"]);
+    let initial_calls = fs::read_to_string(f.dir.join("calls")).unwrap();
+    assert!(!initial_calls.contains("--hostname"));
+    fs::write(&path, original.replace("[container]", "[container]\nhostname='forbes'")).unwrap();
+    let changed = f.run(&["container", "start", "dev"]);
+    assert!(!changed.status.success());
+    assert!(String::from_utf8_lossy(&changed.stderr).contains("configuration changed"));
+    f.ok(&["container", "recreate", "dev", "--force"]);
+    let calls: Vec<Vec<String>> = fs::read_to_string(f.dir.join("calls")).unwrap().lines()
+        .map(|line| serde_json::from_str(line).unwrap()).collect();
+    let run = calls.iter().rev().find(|args| args[0] == "run").unwrap();
+    assert_eq!(run[run.iter().position(|arg| arg == "--hostname").unwrap() + 1], "forbes");
+    assert!(!run.iter().any(|arg| arg.starts_with("--privileged")));
+}
+
+#[test]
+fn invalid_hostnames_are_rejected_before_podman() {
+    for name in ["", "-bad", "bad-", "two words", "a..b", "a/b", "forbes\nother", "é", &"a".repeat(65)] {
+        let f = Fixture::new();
+        let path = f.dir.join("config/containers/dev.toml");
+        fs::write(&path, format!("[container]\nimage='fixture:latest'\nhostname={}\n[ssh]\nuser='dev'\n", serde_json::to_string(name).unwrap())).unwrap();
         assert!(!f.run(&["container", "start", "dev"]).status.success());
         assert!(!f.dir.join("calls").exists());
     }
