@@ -18,9 +18,9 @@ impl Fixture {
         ));
         let workspace = root.join("repo");
         fs::create_dir_all(workspace.join("src")).unwrap();
-        fs::create_dir_all(root.join("config/enclo/containers")).unwrap();
+        fs::create_dir_all(root.join("config/enclo/hosts")).unwrap();
         fs::write(
-            root.join("config/enclo/containers/default.toml"),
+            root.join("config/enclo/hosts/default.toml"),
             "[container]\nimage='test'\nvolumes=['home:%h']\n[modules]\n",
         )
         .unwrap();
@@ -173,7 +173,7 @@ fn explicit_directory_is_strict_and_implicit_selection_is_visible() {
         .status
         .success());
     // Explicit config remains available as -c and bypasses discovery too.
-    let config = f.root.join("config/enclo/containers/default.toml");
+    let config = f.root.join("config/enclo/hosts/default.toml");
     assert!(f
         .command(
             &f.workspace,

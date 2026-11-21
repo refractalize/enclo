@@ -182,7 +182,7 @@ async fn reload(
     let mut desired = ConnectionProfile::load(path)?;
     let revision = profile_revision(&desired)?;
     desired
-        .resolve_container(config_root, root, state_root, true)
+        .resolve_host(config_root, root, state_root, true)
         .await?;
     let prepared = host_services::Prepared::load(&desired, &services.runtime.dir).await?;
     let old_revision = services.source_revision.clone();
@@ -232,7 +232,7 @@ async fn run_inner(
     tokio::pin!(signal);
     let prepared = tokio::select! {
         result = async {
-            profile.resolve_container(config_root, root, state_root, true).await?;
+            profile.resolve_host(config_root, root, state_root, true).await?;
             host_services::Prepared::load(&profile, &runtime.dir).await
         } => result?,
         _ = &mut signal => bail!("services startup interrupted"),
@@ -390,7 +390,7 @@ pub async fn ensure_running(
         );
     }
     let resolved = desired
-        .resolve_container(config_root, root, state_root, false)
+        .resolve_host(config_root, root, state_root, false)
         .await;
     if status["configured_revision"].is_null()
         && status["transport_ready"] == true

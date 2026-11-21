@@ -15,7 +15,7 @@ service, D-Bus proxy) are started alongside the container and torn down when it
 exits.
 .PP
 Container configs live at
-.IR ~/.config/enclo/containers/<NAME>.toml .
+.IR ~/.config/enclo/hosts/<NAME>.toml .
 Pass
 .B \-\-config
 to override the name-based lookup.
@@ -28,7 +28,7 @@ Search this directory and its parents for .enclo.toml. Error if none is found;
 never fall back to a standalone central profile for an explicit directory.
 .TP
 .BR \-C ", " \-\-container " " \fINAME\fR
-Select the standalone central profile ~/.config/enclo/containers/<NAME>.toml.
+Select the standalone central profile ~/.config/enclo/hosts/<NAME>.toml.
 NAME is the profile filename stem, not the Podman container.name setting.
 .TP
 .BR \-c ", " \-\-config " " \fIPATH\fR
@@ -40,6 +40,13 @@ stderr. A discovered invalid, unreadable or untrusted file fails without fallbac
 Status without a selector lists all instances. Serve accepts no target selectors;
 untrust accepts only --directory, defaulting to the current directory.
 .SH COMMANDS
+.SS host
+Manage named local Podman hosts directly.
+For example,
+.B enclo host start dev
+uses the hosts/dev.toml profile, and
+.B enclo host list
+lists created hosts in the current configuration scope.
 .SS auth login codex
 Sign in to Codex on the host using a dedicated Enclo profile. Requires the Codex
 CLI on PATH. Runs device authentication interactively and forces file-based
@@ -159,10 +166,10 @@ Print what would be created without making any changes.
 .PP
 .SH FILES
 .TP
-.I ~/.config/enclo/containers/<NAME>.toml
+.I ~/.config/enclo/hosts/<NAME>.toml
 Container config file (Linux).
 .TP
-.I ~/.config/enclo/containers/<NAME>.toml
+.I ~/.config/enclo/hosts/<NAME>.toml
 Container config file (macOS).
 .TP
 .I $XDG_RUNTIME_DIR/enclo/<name>/

@@ -22,7 +22,7 @@ impl Fixture {
             "home",
             "bin",
             "repo",
-            "config/enclo/containers",
+            "config/enclo/hosts",
             "state/enclo/trust",
             "runtime",
         ] {
@@ -97,7 +97,7 @@ raise SystemExit('unexpected fake podman invocation: ' + str(args))
         .unwrap();
         fs::set_permissions(fake, fs::Permissions::from_mode(0o755)).unwrap();
         fs::write(
-            root.join("config/enclo/containers/default.toml"),
+            root.join("config/enclo/hosts/default.toml"),
             r#"
 [container]
 image = "test"
@@ -164,7 +164,7 @@ enabled = false
         fs::write(runtime.join("exec-env"), "").unwrap();
         fs::write(runtime.join("home-ready"), "").unwrap();
         let local = fs::read(root.join(".enclo.toml")).unwrap();
-        let central = fs::read(self.root.join("config/enclo/containers/default.toml")).unwrap();
+        let central = fs::read(self.root.join("config/enclo/hosts/default.toml")).unwrap();
         let mut digest = Sha256::new();
         digest.update((local.len() as u64).to_le_bytes());
         digest.update(local);
@@ -257,7 +257,7 @@ fn local_script_cannot_enable_home_or_override_central_script() {
 #[test]
 fn central_failure_prevents_local_and_timeout_stops_container() {
     let f = Fixture::new();
-    let path = f.root.join("config/enclo/containers/default.toml");
+    let path = f.root.join("config/enclo/hosts/default.toml");
     let original = fs::read_to_string(&path).unwrap();
     fs::write(
         &path,

@@ -1,5 +1,5 @@
 [target]
-container = "dev"
+host = "dev"
 
 # A host HTTP service can be forwarded once you start it separately:
 # [[forwards]]

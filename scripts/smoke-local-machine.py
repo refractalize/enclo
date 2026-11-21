@@ -47,19 +47,19 @@ def main():
         root = Path(temporary)
         config = root / 'config'
         runtime = root / 'runtime'
-        (config / 'containers').mkdir(parents=True)
+        (config / 'hosts').mkdir(parents=True)
         (config / 'connections').mkdir()
         volume = f'enclo-smoke-{root.name}'
-        (config / 'containers/dev.toml').write_text(
+        (config / 'hosts/dev.toml').write_text(
             f'[container]\nimage={json.dumps(args.image)}\nvolumes=[{json.dumps(volume + ":/persistent")}]\n[ssh]\nuser={json.dumps(args.ssh_user)}\n')
         if args.fixed_ssh_port:
             with socket.socket() as probe:
                 probe.bind(('127.0.0.1', 0))
                 fixed_port = probe.getsockname()[1]
-            with (config / 'containers/dev.toml').open('a') as stream:
+            with (config / 'hosts/dev.toml').open('a') as stream:
                 stream.write(f'host_port={fixed_port}\n')
         if args.managed_home:
-            with (config / 'containers/dev.toml').open('a') as stream:
+            with (config / 'hosts/dev.toml').open('a') as stream:
                 stream.write("\n[home]\nenabled=true\n[home.init]\ncommand='echo initialized >> init-count; test $(id -u) = $(stat -c %u .)'\n")
         if args.container_init:
             import shlex
@@ -67,22 +67,22 @@ def main():
             hook = f'test "$(id -u)" = 0; home=$(getent passwd {user} | cut -d: -f6); test -f "$home/init-count"; echo initialized >> /persistent/container-init-count'
             if args.systemd:
                 hook += f'; loginctl enable-linger {user}'
-            with (config / 'containers/dev.toml').open('a') as stream:
+            with (config / 'hosts/dev.toml').open('a') as stream:
                 stream.write('\n[container.init]\nuser="root"\ncommand=' + json.dumps(hook) + '\n')
         if args.nested_podman:
-            with (config / 'containers/dev.toml').open('a') as stream:
+            with (config / 'hosts/dev.toml').open('a') as stream:
                 stream.write(f'\n[nested_podman]\nenabled=true\nproc_mount="{args.nested_proc_mount}"\n')
         if args.nvidia:
-            with (config / 'containers/dev.toml').open('a') as stream:
+            with (config / 'hosts/dev.toml').open('a') as stream:
                 stream.write('\n[gpu]\nnvidia=["all"]\n')
         if args.desktop_dbus:
-            with (config / 'containers/dev.toml').open('a') as stream:
+            with (config / 'hosts/dev.toml').open('a') as stream:
                 stream.write('\n[desktop.dbus]\nenabled=true\n')
         masks = ['systemd-oomd.service', 'systemd-oomd.socket',
                  'systemd-resolved.service', 'systemd-resolved-monitor.socket',
                  'systemd-resolved-varlink.socket'] + args.systemd_mask
         if args.systemd:
-            with (config / 'containers/dev.toml').open('a') as stream:
+            with (config / 'hosts/dev.toml').open('a') as stream:
                 stream.write('\n[systemd]\nenabled=true\nmask=' + json.dumps(masks) + '\n')
         scope = hashlib.sha256(str(config.resolve()).encode()).hexdigest()
         container_name = f'enclo-{scope[:12]}-dev'
@@ -132,7 +132,7 @@ def main():
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         (config / 'connections/work.toml').write_text(
-            '[target]\ncontainer="dev"\n[[forwards]]\ndirection="remote"\n'
+            '[target]\nhost="dev"\n[[forwards]]\ndirection="remote"\n'
             f'spec="127.0.0.1:18080:127.0.0.1:{server.server_port}"\n')
 
         if args.secrets:
@@ -219,18 +219,18 @@ def main():
                 processes.append(bus)
                 bus_address = bus.stdout.readline().strip()
                 assert bus_address.startswith('unix:path=')
-                machine_config = config / 'containers/dev.toml'
+                machine_config = config / 'hosts/dev.toml'
                 machine_config.write_text(machine_config.read_text().replace('[desktop.dbus]\n', '[desktop.dbus]\naddress='+json.dumps(bus_address)+'\n'))
             print(f'Starting isolated {"systemd" if args.systemd else "init/sshd"} machine…', flush=True)
-            initial = data('container', 'start', 'dev')
+            initial = data('host', 'start', 'dev')
             report['initial_endpoint'] = initial
             exported = root / 'exported-ssh-config'
             if args.fixed_ssh_port:
                 assert initial['port'] == fixed_port
-                exported.write_text(cli('container', 'export', 'dev').stdout)
+                exported.write_text(cli('host', 'export', 'dev').stdout)
                 subprocess.run(['ssh', '-F', str(exported), 'enclo-dev', 'true'], check=True, timeout=15)
             assert initial['running'] and initial['port'] > 0
-            assert len(data('container', 'list')) == 1
+            assert len(data('host', 'list')) == 1
             assert not data('services', 'list')
             state = Path(initial['state_directory'])
             identity = (state / 'client_ed25519').read_bytes()
@@ -241,7 +241,7 @@ def main():
             assert data('services', 'status', 'work')['transport_ready']
             if args.secrets:
                 exported_client = root / 'client-ssh-config'
-                exported_client.write_text(cli('container', 'export', 'dev').stdout)
+                exported_client.write_text(cli('host', 'export', 'dev').stdout)
                 ordinary = subprocess.run(['ssh', '-F', str(exported_client), 'enclo-dev', '"$HOME/.local/bin/enclo" get SMOKE_TOKEN'], capture_output=True, text=True, timeout=15)
                 assert ordinary.returncode == 0, ordinary.stderr
                 assert 'SMOKE_TOKEN' in ordinary.stdout
@@ -250,9 +250,9 @@ def main():
             assert shell('id', '-u').stdout.strip() == str(os.getuid())
             if args.container_init:
                 assert shell('cat', '/persistent/container-init-count').stdout == 'initialized\n'
-                cli('container', 'init', 'dev')
+                cli('host', 'init', 'dev')
                 assert shell('cat', '/persistent/container-init-count').stdout == 'initialized\n'
-                cli('container', 'init', 'dev', '--rerun')
+                cli('host', 'init', 'dev', '--rerun')
                 assert shell('cat', '/persistent/container-init-count').stdout == 'initialized\ninitialized\n'
                 if args.systemd:
                     shell('test', '-f', f'/var/lib/systemd/linger/{args.ssh_user}')
@@ -306,12 +306,12 @@ def main():
                                        env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             processes.append(session)
             wait(lambda: len(data('sessions', 'list')) == 1)
-            refusal = cli('container', 'stop', 'dev', check=False)
+            refusal = cli('host', 'stop', 'dev', check=False)
             assert refusal.returncode != 0 and 'active sessions' in refusal.stderr
             cli('services', 'stop', 'work')
             supervisor.wait(timeout=10)
             assert session.poll() is None
-            assert data('container', 'status', 'dev')['running']
+            assert data('host', 'status', 'dev')['running']
             supervisor = start_services()
             tunnel()
             secrets_check()
@@ -326,7 +326,7 @@ def main():
             supervisor = start_services()
             assert identity == (state / 'client_ed25519').read_bytes()
             assert pinned_key == known_hosts.read_bytes()
-            assert data('container', 'status', 'dev')['container_id'] == initial['container_id']
+            assert data('host', 'status', 'dev')['container_id'] == initial['container_id']
             tunnel()
             secrets_check()
 
@@ -335,13 +335,13 @@ def main():
             shell('sh', '-c', 'printf preserved > "$HOME/enclo-smoke-marker"')
             shell('sudo', '-n', 'sh', '-c', 'printf volume-preserved > /persistent/marker')
             for operation in ['remove', 'recreate']:
-                refused = cli('container', operation, 'dev', check=False)
+                refused = cli('host', operation, 'dev', check=False)
                 assert refused.returncode != 0 and 'container is running' in refused.stderr
-            cli('container', 'stop', 'dev')
-            assert not data('container', 'status', 'dev')['running']
+            cli('host', 'stop', 'dev')
+            assert not data('host', 'status', 'dev')['running']
             wait(lambda: not data('services', 'status', 'work')['transport_ready'])
             assert supervisor.poll() is None  # unhealthy supervisor remains controllable
-            restarted = data('container', 'start', 'dev')
+            restarted = data('host', 'start', 'dev')
             assert restarted['container_id'] == initial['container_id']
             assert restarted['running'] and restarted['port'] > 0
             if args.container_init:
@@ -358,14 +358,14 @@ def main():
             secrets_check()
             cli('services', 'stop', 'work')
             supervisor.wait(timeout=10)
-            cli('container', 'stop', 'dev')
+            cli('host', 'stop', 'dev')
             assert not data('services', 'list') and not data('sessions', 'list')
 
             print('Recreating the test machine; checking fresh identity and host-key discovery…', flush=True)
             # Recreate applies changed config and discards only the writable layer.
-            machine_config = config / 'containers/dev.toml'
+            machine_config = config / 'hosts/dev.toml'
             machine_config.write_text(machine_config.read_text().replace('[container]\n', '[container]\nenv=[\"ENCLO_SMOKE_REVISION=2\"]\n'))
-            recreated = data('container', 'recreate', 'dev')
+            recreated = data('host', 'recreate', 'dev')
             supervisor = start_services()
             assert recreated['container_id'] != initial['container_id']
             if args.container_init:
@@ -387,7 +387,7 @@ def main():
                 assert shell('sh', '-c', 'cat "$HOME/enclo-smoke-marker"').stdout == 'preserved'
                 assert shell('sh', '-c', 'cat "$HOME/init-count"').stdout == 'initialized\n'
                 assert shell('sh', '-c', 'stat -c %a "$HOME"').stdout.strip() == '700'
-                cli('container', 'home-init', 'dev', '--rerun')
+                cli('host', 'home-init', 'dev', '--rerun')
                 assert shell('sh', '-c', 'cat "$HOME/init-count"').stdout == 'initialized\ninitialized\n'
             else:
                 assert shell('sh', '-c', 'test ! -e \"$HOME/enclo-smoke-marker\"').returncode == 0
@@ -408,9 +408,9 @@ def main():
             secrets_check()
             cli('services', 'stop', 'work')
             supervisor.wait(timeout=10)
-            cli('container', 'stop', 'dev')
-            cli('container', 'remove', 'dev')
-            assert data('container', 'status', 'dev') is None
+            cli('host', 'stop', 'dev')
+            cli('host', 'remove', 'dev')
+            assert data('host', 'status', 'dev') is None
             assert identity == (state / 'client_ed25519').read_bytes()
             subprocess.run(['podman', '--remote=false', 'volume', 'exists', volume], check=True, timeout=10)
             report['recreated_endpoint'] = recreated

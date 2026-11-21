@@ -100,7 +100,7 @@ Restart it explicitly when you are ready for it to pick up the new version.
 
 ## Quick start
 
-1. Create a container config at `~/.config/enclo/containers/dev.toml`:
+1. Create a container config at `~/.config/enclo/hosts/dev.toml`:
 
 ```toml
 [container]

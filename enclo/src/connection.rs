@@ -38,7 +38,7 @@ pub struct ConnectionProfile {
 pub struct Target {
     #[serde(default)]
     pub ssh: String,
-    pub container: Option<String>,
+    pub host: Option<String>,
     /// Optional OpenSSH config; relative paths are relative to the profile.
     pub config: Option<PathBuf>,
 }
@@ -104,10 +104,10 @@ impl ConnectionProfile {
         }
 
         ensure!(
-            self.target.container.is_some() == self.target.ssh.is_empty(),
-            "target must select exactly one of ssh or container"
+            self.target.host.is_some() == self.target.ssh.is_empty(),
+            "target must select exactly one of ssh or host"
         );
-        if let Some(name) = &self.target.container {
+        if let Some(name) = &self.target.host {
             crate::profiles::validate_name(name)?;
             ensure!(
                 self.target.config.is_none(),
@@ -152,14 +152,14 @@ impl ConnectionProfile {
         Ok(())
     }
 
-    pub async fn resolve_container(
+    pub async fn resolve_host(
         &mut self,
         config_root: &Path,
         runtime_root: Option<&Path>,
         state_root: Option<&Path>,
         start: bool,
     ) -> Result<()> {
-        if let Some(name) = &self.target.container {
+        if let Some(name) = &self.target.host {
             let machine = crate::local_container::LocalContainer::new(
                 name,
                 config_root,
@@ -631,7 +631,7 @@ pub async fn shell(
     supervisor::ensure_running(path, root, config_root, state_root).await?;
     let mut profile = ConnectionProfile::load(path)?;
     profile
-        .resolve_container(config_root, root, state_root, false)
+        .resolve_host(config_root, root, state_root, false)
         .await?;
     let runtime = Runtime::resolve(path, root)?;
     runtime.check(&profile).await?;
@@ -672,14 +672,14 @@ pub async fn shell(
 mod tests {
     use super::*;
     #[test]
-    fn container_target_schema_is_exclusive() {
-        let profile: ConnectionProfile = toml::from_str("[target]\ncontainer='dev'").unwrap();
+    fn host_target_schema_is_exclusive() {
+        let profile: ConnectionProfile = toml::from_str("[target]\nhost='dev'").unwrap();
         profile.validate().unwrap();
 
         for target in [
-            "ssh='host'\ncontainer='dev'",
-            "container='../dev'",
-            "container='dev'\nconfig='ssh_config'",
+            "ssh='host'\nhost='dev'",
+            "host='../dev'",
+            "host='dev'\nconfig='ssh_config'",
             "",
         ] {
             let profile: ConnectionProfile =

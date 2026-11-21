@@ -426,7 +426,7 @@ mod tests {
 
     #[test]
     fn resolve_str_expands_tilde() {
-        let base = std::path::Path::new("/cfg/containers");
+        let base = std::path::Path::new("/cfg/hosts");
         let home = Some(std::path::Path::new("/home/user"));
         assert_eq!(
             resolve_str(base, home, "~/.config/enclo/secrets.toml"),
@@ -435,7 +435,7 @@ mod tests {
         assert_eq!(resolve_str(base, home, "~"), "/home/user");
         assert_eq!(
             resolve_str(base, home, "secrets.toml"),
-            "/cfg/containers/secrets.toml"
+            "/cfg/hosts/secrets.toml"
         );
         assert_eq!(
             resolve_str(base, home, "/abs/secrets.toml"),
@@ -443,11 +443,11 @@ mod tests {
         );
         assert_eq!(
             resolve_str(base, home, "~other/secrets.toml"),
-            "/cfg/containers/~other/secrets.toml"
+            "/cfg/hosts/~other/secrets.toml"
         );
         assert_eq!(
             resolve_str(base, None, "~/secrets.toml"),
-            "/cfg/containers/~/secrets.toml"
+            "/cfg/hosts/~/secrets.toml"
         );
     }
 

@@ -245,7 +245,7 @@ mkdir -p .enclo-init
 if [ "$1" = rerun ]; then rm -f .enclo-init/central; fi
 if [ -f .enclo-init/central ]; then
     if [ "$(cat .enclo-init/central)" != "$3" ]; then
-        printf '%s\n' 'Home initialization changed; keeping completed state. Use container home-init NAME --rerun to apply it.' >&2
+        printf '%s\n' 'Home initialization changed; keeping completed state. Use enclo host home-init NAME --rerun to apply it.' >&2
     fi
     exit 0
 fi

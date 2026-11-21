@@ -21,7 +21,7 @@ later cutover; this guide does not authorize one.
 
 ## Translate configuration by lifetime
 
-Create `containers/NAME.toml` for local machine configuration and
+Create `hosts/NAME.toml` for local machine configuration and
 `connections/NAME.toml` for connection configuration. These names need not match.
 Use a separate secrets policy file referenced by the connection profile. Paths
 in `services.secrets.config` and `client_binary` are relative to that connection
@@ -91,13 +91,13 @@ Use fresh, short config/runtime/state roots so no installed instance is selected
 export ENCLO_CONFIG_DIR=/tmp/enclo-migration/config
 export ENCLO_RUNTIME_DIR=/tmp/enclo-migration/runtime
 export ENCLO_STATE_DIR=/tmp/enclo-migration/state
-# Populate config/containers/dev.toml and config/connections/work.toml first.
+# Populate config/hosts/dev.toml and config/connections/work.toml first.
 cargo build -p enclo -p enclo-secrets -p enclo-container-client --offline
-target/debug/enclo container start dev
+target/debug/enclo host start dev
 target/debug/enclo services run work       # keep this foreground process running
 # In another terminal with the same directory overrides:
 target/debug/enclo session work -- id
-target/debug/enclo container list
+target/debug/enclo host list
 target/debug/enclo services list
 target/debug/enclo sessions list
 ```
@@ -111,8 +111,8 @@ separate optional validation and should be reported as untested if unavailable.
 
 Check that a shell survives `services stop work`, a new session starts services again,
 and services can restart. Stop services and sessions before testing container
-stop/start or recreation. `container recreate` discards the writable layer;
-managed home data must survive. Use `container home-init dev --rerun` only when
+stop/start or recreation. `host recreate` discards the writable layer;
+managed home data must survive. Use `host home-init dev --rerun` only when
 intentionally reapplying the init script. A failed or timed-out init stops the
 container and keeps partial changes for a retry.
 

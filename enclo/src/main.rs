@@ -72,10 +72,10 @@ impl TargetArgs {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Local Podman machine lifecycle (run/reload retain the legacy backend)
-    Container {
+    /// Manage a named local Podman host
+    Host {
         #[command(subcommand)]
-        action: ContainerAction,
+        action: HostAction,
         #[arg(long, global = true)]
         runtime_dir: Option<PathBuf>,
     },
@@ -212,47 +212,22 @@ struct ConnectionName {
 }
 
 #[derive(Subcommand)]
-enum ContainerAction {
+enum HostAction {
     /// Initialize a container instance; --rerun explicitly reapplies the script
     Init { name: String, #[arg(long)] rerun: bool },
     /// Export SSH settings, or add/update a managed entry in ~/.ssh/config
     Export { name: String, #[arg(long)] host: Option<String>, #[arg(long)] add: bool },
     /// Initialize a managed home; --rerun explicitly reapplies the configured script
     HomeInit { name: String, #[arg(long)] rerun: bool },
-    Run(ConnectionName),
     Start(ConnectionName),
     Status(ConnectionName),
     List,
     Stop { name: Option<String>, #[arg(long)] force: bool },
     Restart { name: Option<String>, #[arg(long)] force: bool },
-    Reload(ConnectionName),
     /// Discard the writable layer; keep named volumes and SSH identity
     Remove { name: String, #[arg(long, help = "Allow removing a running container, disconnecting its sessions")] force: bool },
     /// Replace with current config/image; discard writable layer, keep named volumes
     Recreate { name: String, #[arg(long, help = "Allow replacing a running container, disconnecting its sessions")] force: bool },
-}
-
-// The foreground legacy runner is retained for migration. The other grouped
-// commands use the local SSH machine backend without the installed daemon.
-
-fn normalize_container(mut cli: Cli) -> Result<Cli> {
-    let legacy = match &cli.command {
-        Command::Container { action: ContainerAction::Run(selected), .. } => Some((false, selected.name.clone())),
-        Command::Container { action: ContainerAction::Reload(selected), .. } => Some((true, selected.name.clone())),
-        _ => None,
-    };
-    if let Some((reload, name)) = legacy {
-        if let Command::Container { runtime_dir, .. } = &cli.command {
-            anyhow::ensure!(runtime_dir.is_none(), "legacy container run/reload do not support --runtime-dir; use XDG_RUNTIME_DIR for foreground legacy testing");
-        }
-        if let Some(name) = name {
-            anyhow::ensure!(!cli.target.is_explicit(), "choose a container name or a target selector, not both");
-            enclo::profiles::validate_name(&name)?;
-            cli.target.container = Some(name);
-        }
-        cli.command = if reload { Command::Reload } else { Command::Run };
-    }
-    Ok(cli)
 }
 
 #[derive(Subcommand)]
@@ -320,7 +295,7 @@ async fn main() -> Result<()> {
         )
         .init();
 
-    let cli = normalize_container(Cli::parse())?;
+    let cli = Cli::parse();
     cli.target.validate()?;
     let mut config_root = enclo::profiles::config_dir(cli.config_dir.as_deref());
     if config_root.is_relative() {
@@ -329,31 +304,30 @@ async fn main() -> Result<()> {
     CONFIG_DIR.set(config_root).expect("configuration root initialized once");
 
     match cli.command {
-        Command::Container { action, runtime_dir } => {
-            anyhow::ensure!(!cli.target.is_explicit(), "container commands take a name; use top-level run for legacy configs");
-            if let ContainerAction::Export { name, host, add } = &action {
+        Command::Host { action, runtime_dir } => {
+            anyhow::ensure!(!cli.target.is_explicit(), "host commands take a name; use top-level run for legacy configs");
+            if let HostAction::Export { name, host, add } = &action {
                 let machine = enclo::local_container::LocalContainer::new(name, &config_dir(), runtime_dir.as_deref(), cli.state_dir.as_deref())?;
                 let text = machine.export_ssh(host.as_deref(), *add).await?;
                 if !add { print!("{text}"); }
                 return Ok(());
             }
             let (operation, name, force) = match action {
-                ContainerAction::Export { .. } => unreachable!(),
-                ContainerAction::HomeInit { name, rerun } => ("home-init", Some(name), rerun),
-                ContainerAction::Init { name, rerun } => ("init", Some(name), rerun),
-                ContainerAction::Start(selected) => ("start", selected.name, false),
-                ContainerAction::Status(selected) => ("status", selected.name, false),
-                ContainerAction::Stop { name, force } => ("stop", name, force),
-                ContainerAction::Restart { name, force } => ("restart", name, force),
-                ContainerAction::Remove { name, force } => ("remove", Some(name), force),
-                ContainerAction::Recreate { name, force } => ("recreate", Some(name), force),
-                ContainerAction::List => {
+                HostAction::Export { .. } => unreachable!(),
+                HostAction::HomeInit { name, rerun } => ("home-init", Some(name), rerun),
+                HostAction::Init { name, rerun } => ("init", Some(name), rerun),
+                HostAction::Start(selected) => ("start", selected.name, false),
+                HostAction::Status(selected) => ("status", selected.name, false),
+                HostAction::Stop { name, force } => ("stop", name, force),
+                HostAction::Restart { name, force } => ("restart", name, force),
+                HostAction::Remove { name, force } => ("remove", Some(name), force),
+                HostAction::Recreate { name, force } => ("recreate", Some(name), force),
+                HostAction::List => {
                     println!("{}", serde_json::to_string_pretty(&enclo::local_container::LocalContainer::list(&config_dir()).await?)?);
                     return Ok(());
                 }
-                ContainerAction::Run(_) | ContainerAction::Reload(_) => anyhow::bail!("use container start for independent SSH machines; top-level run/reload retain the legacy backend"),
             };
-            let name = name.ok_or_else(|| anyhow::anyhow!("a container name is required"))?;
+            let name = name.ok_or_else(|| anyhow::anyhow!("a host name is required"))?;
             let machine = enclo::local_container::LocalContainer::new(&name, &config_dir(), runtime_dir.as_deref(), cli.state_dir.as_deref())?;
             if operation == "init" {
                 println!("{}", serde_json::to_string_pretty(&machine.container_init(force).await?)?);
@@ -639,7 +613,7 @@ fn select_target(target: &TargetArgs) -> Result<Selection> {
             "--container must be a central profile name (letters, numbers, - and _)"
         );
         return Ok(Selection {
-            path: config_dir().join("containers").join(format!("{name}.toml")),
+            path: config_dir().join("hosts").join(format!("{name}.toml")),
             name: name.clone(),
             directory: None,
             implicit: false,
@@ -679,7 +653,7 @@ fn select_target(target: &TargetArgs) -> Result<Selection> {
     );
     eprintln!("No workspace configuration found; using central container: default");
     Ok(Selection {
-        path: config_dir().join("containers/default.toml"),
+        path: config_dir().join("hosts/default.toml"),
         name: "default".into(),
         directory: None,
         implicit: true,
@@ -853,9 +827,13 @@ mod cli_tests {
     use super::*;
 
     #[test]
-    fn named_container_commands_use_independent_backend() {
-        let cli = Cli::try_parse_from(["enclo", "container", "start", "dev", "--runtime-dir", "/tmp/enclo-test"]).unwrap();
-        assert!(matches!(cli.command, Command::Container { action: ContainerAction::Start(ConnectionName { name: Some(name) }), runtime_dir: Some(root) } if name == "dev" && root == std::path::Path::new("/tmp/enclo-test")));
+    fn named_host_commands_use_independent_backend() {
+        let cli = Cli::try_parse_from(["enclo", "host", "start", "dev", "--runtime-dir", "/tmp/enclo-test"]).unwrap();
+        assert!(matches!(cli.command, Command::Host { action: HostAction::Start(ConnectionName { name: Some(name) }), runtime_dir: Some(root) } if name == "dev" && root == std::path::Path::new("/tmp/enclo-test")));
+        for action in ["start", "run", "reload"] {
+            let error = Cli::try_parse_from(["enclo", "container", action, "dev"]).err().unwrap();
+            assert_eq!(error.kind(), clap::error::ErrorKind::InvalidSubcommand);
+        }
         assert!(matches!(Cli::try_parse_from(["enclo", "start", "-C", "dev"]).unwrap().command, Command::Start));
     }
 

@@ -2,7 +2,7 @@
 
 This is the migration design and guide to the SSH machine backend. Top-level
 compatibility commands and the installed daemon retain their original behavior.
-`container start/status/list/stop/restart/remove/recreate/home-init` use local Podman directly;
+`host start/status/list/stop/restart/remove/recreate/home-init` use local Podman directly;
 `services` and `session` use OpenSSH. None of these new paths require host
 D-Bus, host systemd, or an installed enclo daemon for orchestration. Optional
 desktop services use a host compositor/session bus, and Podman uses its configured
@@ -15,7 +15,7 @@ Central configuration is selected by name:
 
 ```text
 $XDG_CONFIG_HOME/enclo/
-    containers/dev.toml
+    hosts/dev.toml
     connections/work.toml
     secrets/development.toml
 ```
@@ -23,7 +23,7 @@ $XDG_CONFIG_HOME/enclo/
 Configuration-root precedence is `--config-dir`, nonempty `ENCLO_CONFIG_DIR`,
 `$XDG_CONFIG_HOME/enclo`, then `~/.config/enclo`. Enclo-specific overrides are
 already application roots: `--config-dir ./config` reads
-`./config/connections/work.toml` and `./config/containers/dev.toml`, with no extra
+`./config/connections/work.toml` and `./config/hosts/dev.toml`, with no extra
 `enclo` component. The flag is global and may appear before or after subcommands.
 It also applies to workspace central-profile resolution and a newly launched
 container daemon's configuration lookup. It does not relocate or isolate the
@@ -36,11 +36,11 @@ configuration or grants a workspace permission to select new secrets.
 
 ```sh
 # Independent local SSH machines
-./target/debug/enclo container start dev
-./target/debug/enclo container status dev
-./target/debug/enclo container list
-./target/debug/enclo container stop dev
-./target/debug/enclo container restart dev
+./target/debug/enclo host start dev
+./target/debug/enclo host status dev
+./target/debug/enclo host list
+./target/debug/enclo host stop dev
+./target/debug/enclo host restart dev
 # Legacy runner and daemon reload remain available separately
 ./target/debug/enclo run --config ./container.toml
 ./target/debug/enclo reload -C legacy
@@ -66,15 +66,16 @@ when services are stopped or profile files are absent. Global results include a
 ID; bulk stop requires a connection name or explicit profile. These commands never
 search for arbitrary SSH processes.
 
-The new machine commands read `containers/NAME.toml` using the small schema below.
-They do not accept the old `[modules]` schema. `container run/reload` remain legacy
-aliases; top-level `start/stop/restart/status/reload/run` retain the old backend.
-`container remove` discards a stopped machine; `container recreate` replaces it
+When upgrading an existing config root, move its profile TOMLs from `containers/` to `hosts/` and rename `container` to `host` under `[target]` in connection profiles. Keep the `[container]` table in each host profile.
+
+The new machine commands read `hosts/NAME.toml` using the small schema below.
+For profiles using the legacy `[modules]` schema, use the top-level lifecycle commands such as `enclo run` and `enclo reload`.
+`host remove` discards a stopped machine; `host recreate` replaces it
 with the current configuration and local image. Both preserve named volumes and
 the host SSH identity; running machines require `--force`.
 
 A connection's `[target]` accepts exactly one of `ssh = "host-alias"` or
-`container = "dev"`. `services run` starts/provisions a managed machine if needed.
+`host = "dev"`. `services run` starts/provisions a managed machine if needed.
 `session` ensures services are ready before opening its independent SSH connection.
 If no supervisor is running it calls the background-start path, which also starts
 or provisions a managed container if needed. Concurrent sessions serialize startup;
@@ -95,14 +96,14 @@ cargo build -p enclo --offline
 export ENCLO_CONFIG_DIR="$PWD/examples/ssh-machine"
 export ENCLO_RUNTIME_DIR="$PWD/.enclo-runtime"
 export ENCLO_STATE_DIR="$PWD/.enclo-state"
-./target/debug/enclo container start dev
+./target/debug/enclo host start dev
 ./target/debug/enclo services run work      # foreground; leave this running
 # In another terminal with the same environment:
 ./target/debug/enclo session work -- uname -a
 ./target/debug/enclo services list
 ./target/debug/enclo sessions list
 ./target/debug/enclo services stop work
-./target/debug/enclo container stop dev
+./target/debug/enclo host stop dev
 ```
 
 Container config:
@@ -143,7 +144,7 @@ mask list defaults to empty; specifying masks with systemd disabled is rejected.
 literal names, not paths/options/patterns. Masking `enclo-sshd.service` is rejected.
 Masks baked into an image remain in effect too.
 
-`Containerfile.systemd` and `containers/systemd.toml` provide a separate example.
+`Containerfile.systemd` and `hosts/systemd.toml` provide a separate example.
 Its profile masks systemd-resolved and systemd-oomd and their sockets: Podman
 supplies DNS configuration and the host handles memory pressure. The image's
 ordinary SSH service is disabled so port 22 belongs to enclo's SSH unit.
@@ -152,7 +153,7 @@ ordinary SSH service is disabled so port 22 belongs to enclo's SSH unit.
 podman build --build-arg DEV_UID="$(id -u)" \
   -t localhost/enclo-systemd-test:latest \
   -f examples/ssh-machine/Containerfile.systemd examples/ssh-machine
-./target/debug/enclo container start systemd
+./target/debug/enclo host start systemd
 ./target/debug/enclo services run work-systemd
 # In another terminal with the same config/runtime environment:
 ./target/debug/enclo session work-systemd -- sudo systemctl status enclo-sshd
@@ -188,18 +189,18 @@ writable filesystem and does not apply changed configuration.
 
 ```sh
 # Preserve writable-layer data while restarting:
-./target/debug/enclo container stop dev
-./target/debug/enclo container start dev
+./target/debug/enclo host stop dev
+./target/debug/enclo host start dev
 
 # Apply a changed image/config, discarding the old writable layer:
-./target/debug/enclo container stop dev
-./target/debug/enclo container recreate dev
+./target/debug/enclo host stop dev
+./target/debug/enclo host recreate dev
 # Or explicitly disconnect a running machine and replace it:
-./target/debug/enclo container recreate dev --force
+./target/debug/enclo host recreate dev --force
 
 # Remove a stopped container; repeating remove is harmless:
-./target/debug/enclo container stop dev
-./target/debug/enclo container remove dev
+./target/debug/enclo host stop dev
+./target/debug/enclo host remove dev
 ```
 
 `remove` and `recreate` discard the container's writable layer. Put data that must
@@ -221,12 +222,12 @@ State-root precedence is `--state-dir`, nonempty `ENCLO_STATE_DIR`,
 `$XDG_STATE_HOME/enclo`, then `~/.local/state/enclo`. Like the config/runtime
 overrides, the explicit flag and enclo environment variable name an application
 root, with no extra `enclo` component. The flag is global and applies to local
-machine access from `container`, `services run/reload`, and `session`.
+machine access from `host`, `services run/reload`, and `session`.
 A running supervisor retains the state root with which it was launched.
 
 State is scoped by the same canonical-config-root hash used in Podman names,
 so independent configurations cannot accidentally share a `dev` identity.
-`container status` reports the resolved `state_directory`.
+`host status` reports the resolved `state_directory`.
 
 ```text
 $ENCLO_STATE_DIR/containers/<config-root-hash>/dev/
@@ -267,7 +268,7 @@ state root cannot silently take over the same machine. Copying or moving a confi
 root changes its namespace as before.
 
 For containers created by the earlier runtime-backed implementation, `start`
-reports the incompatible bootstrap mount. Use `container recreate` to migrate;
+reports the incompatible bootstrap mount. Use `host recreate` to migrate;
 if the old runtime directory still contains its private client key, enclo copies
 it into persistent state before replacement. The old file must be a regular,
 owner-only file belonging to the current user. Keep the old runtime files until
@@ -291,7 +292,7 @@ credential backends. Enable it in a trusted connection profile:
 
 ```toml
 [target]
-container = "dev" # or ssh = "my-server"
+host = "dev" # or ssh = "my-server"
 
 [services.secrets]
 config = "../secrets/development.toml"
@@ -677,7 +678,7 @@ your development shell):
 
 ```sh
 mkdir -p -m 700 .enclo-runtime
-mkdir -p .enclo-config/connections .enclo-config/containers
+mkdir -p .enclo-config/connections .enclo-config/hosts
 export ENCLO_RUNTIME_DIR="$PWD/.enclo-runtime"
 export ENCLO_CONFIG_DIR="$PWD/.enclo-config"
 # Put the work profile in .enclo-config/connections/work.toml.
@@ -746,7 +747,7 @@ container stop/start with filesystem/key persistence, unhealthy-supervisor reloa
 and endpoint/host-key discovery after container recreation. It also corrupts the
 diagnostic endpoint cache to ensure discovery uses Podman instead. It deletes
 the runtime tree with the machine still running, verifies persistent identity and
-trust, applies changed config through `container recreate`, checks writable-layer
+trust, applies changed config through `host recreate`, checks writable-layer
 data is discarded while named-volume data survives, and verifies `container
 remove` preserves the volume and identity.
 
@@ -776,7 +777,7 @@ Build and run binaries from the checkout; do not invoke installation scripts or
 
 ### Managed homes
 
-Standalone `containers/NAME.toml` can opt into a persistent home (the example
+Standalone `hosts/NAME.toml` can opt into a persistent home (the example
 configs enable this):
 
 ```toml
@@ -794,7 +795,7 @@ volume scoped to the config directory and machine name, and mounts it with
 `nocopy`. The home starts empty, with mode 0700 and the account's ownership;
 existing contents are never recursively chowned. Explicit mounts covering the
 home are rejected. Child mounts such as a workspace are allowed. Volume ownership
-labels are verified before use. `container status NAME` includes the volume name,
+labels are verified before use. `host status NAME` includes the volume name,
 path, UID and GID.
 
 Initialization runs as the SSH user, with HOME and working directory set to the
@@ -805,7 +806,7 @@ container never removes the managed home volume. Changing the config directory
 or machine name selects a different volume.
 
 Editing the init script does not require recreation or automatically rerun it.
-Use `enclo container home-init NAME --rerun` on a running machine to apply it
+Use `enclo host home-init NAME --rerun` on a running machine to apply it
 explicitly; without `--rerun`, a completed initialization is skipped. Failed or
 timed-out initialization stops the container (including existing sessions for a
 manual rerun) to terminate remaining init processes. Partial file changes remain;
@@ -846,10 +847,10 @@ stop/start skips it; recreation runs it again. Changes to the hook do not requir
 recreation and do not silently rerun a completed script. To apply them explicitly:
 
 ```sh
-enclo container init dev --rerun
+enclo host init dev --rerun
 ```
 
-`container init dev` runs a pending hook on an existing running container, or
+`host init dev` runs a pending hook on an existing running container, or
 skips a completed one. Both forms ensure home initialization has completed first.
 Other lifecycle configuration changes still require recreation. Initialization
 is serialized with other lifecycle operations.
@@ -865,7 +866,7 @@ and verifies that the user's systemd manager is active.
 
 ## Nested Podman, GPUs and local desktop
 
-These optional settings belong in `containers/NAME.toml`:
+These optional settings belong in `hosts/NAME.toml`:
 
 ```toml
 [nested_podman]
@@ -888,7 +889,7 @@ talk = ["org.freedesktop.portal.Desktop"]
 # address = "unix:path=/path/to/a/private/bus" # defaults to host DBUS_SESSION_BUS_ADDRESS
 ```
 
-All are disabled by default. Changing them requires `container recreate`, as
+All are disabled by default. Changing them requires `host recreate`, as
 with mounts and image selection. They are local Podman features, not features of
 arbitrary external SSH machines. GPU selectors are passed to Podman CDI; the host
 must already have compatible devices/drivers and CDI configuration. Enclo does
@@ -1016,9 +1017,9 @@ validate real GPU workloads or rendering against a desktop compositor.
 ## Exporting SSH access for external clients
 
 ```sh
-enclo container export dev                     # print Host enclo-dev
-enclo container export dev --host enclo-work   # choose another alias
-enclo container export dev --add               # add/update ~/.ssh/config
+enclo host export dev                     # print Host enclo-dev
+enclo host export dev --host enclo-work   # choose another alias
+enclo host export dev --add               # add/update ~/.ssh/config
 ```
 
 The argument names the container, not the connection profile (`work` selects

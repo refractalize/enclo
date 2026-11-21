@@ -2,7 +2,9 @@
 
 `enclo` is the host-side command. It manages container lifecycle either directly or via a background daemon.
 
-Without a selector, lifecycle commands discover the nearest `.enclo.toml` in the current directory or a parent, falling back to the central `default` profile if none exists. The implicit choice is printed to stderr. A discovered invalid, unreadable or untrusted file causes an error, never fallback. `enclo status` without a selector lists all instances.
+For named SSH environments, use `enclo host start NAME`, `enclo host status NAME`, or `enclo host list`. These commands use local Podman and read named profiles from `hosts/`. [SSH environment guide](ssh-environments.md)
+
+Without a selector, top-level lifecycle commands discover the nearest `.enclo.toml` in the current directory or a parent, falling back to the central `default` profile if none exists. The implicit choice is printed to stderr. A discovered invalid, unreadable or untrusted file causes an error, never fallback. `enclo status` without a selector lists all instances.
 
 `enclo untrust [-d PATH]` revokes approval for the nearest workspace configuration from that directory (current directory by default). It does not stop a running container and does not accept `--container` or `--config`. `enclo serve` and `enclo auth` accept no target selectors.
 
@@ -13,7 +15,7 @@ Without a selector, lifecycle commands discover the nearest `.enclo.toml` in the
 | Flag | Description |
 |---|---|
 | `-d, --directory <PATH>` | Search PATH and its parents for a workspace configuration. Error if none exists; no central-default fallback. |
-| `-C, --container <NAME>` | Select standalone central profile `~/.config/enclo/containers/<NAME>.toml`, bypassing workspace discovery. NAME is the profile filename stem, not its Podman `container.name`. |
+| `-C, --container <NAME>` | Select standalone central profile `~/.config/enclo/hosts/<NAME>.toml`, bypassing workspace discovery. NAME is the profile filename stem, not its Podman `container.name`. |
 | `-c, --config <PATH>` | Select an explicit configuration file, bypassing discovery. |
 
 These selectors are mutually exclusive and may appear before or after the command, including under `home init`. `[TARGET]` below means any one of them, or omission for implicit discovery/default selection. Positional target names are no longer accepted.
@@ -178,8 +180,8 @@ Use this once after creating a container image to ensure the home volume has the
 
 | Path | Description |
 |---|---|
-| `~/.config/enclo/containers/<NAME>.toml` | Container config file (Linux) |
-| `~/.config/enclo/containers/<NAME>.toml` | Container config file (macOS, also respects `XDG_CONFIG_HOME`) |
+| `~/.config/enclo/hosts/<NAME>.toml` | Container config file (Linux) |
+| `~/.config/enclo/hosts/<NAME>.toml` | Container config file (macOS, also respects `XDG_CONFIG_HOME`) |
 | `$XDG_RUNTIME_DIR/enclo/<name>/` | Per-container runtime state (sockets, exec-env) |
 | `$XDG_RUNTIME_DIR/enclo/daemon.sock` | Daemon socket (macOS) |
 

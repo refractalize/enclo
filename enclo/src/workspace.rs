@@ -96,7 +96,7 @@ pub fn load(path: &Path, interactive: bool) -> Result<Config> {
     let bytes = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
     let local = parse(&bytes)?;
     let central_path = crate::config_dir()
-        .join("containers")
+        .join("hosts")
         .join(format!("{}.toml", local.container.from));
     let central = std::fs::read(&central_path)?;
     let mut config = Config::load(&central_path)?;

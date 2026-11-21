@@ -145,7 +145,7 @@ impl LocalContainer {
         };
         let root = root
             .canonicalize()
-            .context("resolve container configuration directory")?;
+            .context("resolve host configuration directory")?;
         let scope = format!("{:x}", Sha256::digest(root.as_os_str().as_encoded_bytes()));
         let dir = crate::connection_runtime::connections_dir(runtime_root)
             .parent()
@@ -163,7 +163,7 @@ impl LocalContainer {
             name: name.into(),
             podman_name: format!("enclo-{}-{name}", &scope[..12]),
             scope,
-            config: root.join("containers").join(format!("{name}.toml")),
+            config: root.join("hosts").join(format!("{name}.toml")),
             dir,
         })
     }
@@ -310,7 +310,7 @@ impl LocalContainer {
         private_dir(&bootstrap)?;
         let existing = self.inspect().await?;
         if let Some(value) = &existing {
-            ensure!(value["Config"]["Labels"]["io.enclo.config"] == revision, "container configuration changed; existing machines are not automatically recreated (use container recreate to apply changes; this discards the writable layer)");
+            ensure!(value["Config"]["Labels"]["io.enclo.config"] == revision, "container configuration changed; existing machines are not automatically recreated (use enclo host recreate to apply changes; this discards the writable layer)");
             // A runtime directory can be deleted between starts. The bind mount
             // must still refer to our bootstrap directory, not another namespace.
             let expected = bootstrap.canonicalize()?;
@@ -319,7 +319,7 @@ impl LocalContainer {
                     .iter()
                     .any(|m| m["Destination"] == "/run/enclo-ssh"
                         && m["Source"].as_str() == expected.to_str())),
-                "container bootstrap is not in this persistent state directory; use its original --state-dir or container recreate to migrate"
+                "container bootstrap is not in this persistent state directory; use its original --state-dir or enclo host recreate to migrate"
             );
         }
         let home = self.plan_home(&config, existing.as_ref()).await?;
@@ -570,7 +570,7 @@ impl LocalContainer {
         let mut profile = crate::connection::ConnectionProfile {
             target: crate::connection::Target {
                 ssh: String::new(),
-                container: Some(self.name.clone()),
+                host: Some(self.name.clone()),
                 config: None,
             },
             forwards: vec![],
@@ -654,7 +654,7 @@ impl LocalContainer {
         let id = &endpoint.container_id;
         let instance = self.state.join("instances").join(id);
         crate::connection_runtime::validate(&instance)
-            .context("SSH trust state is missing; run container start first")?;
+            .context("SSH trust state is missing; run enclo host start first")?;
         let known_hosts = instance.join("known_hosts");
         let key = self.state.join("client_ed25519");
         let user = fs::read_to_string(instance.join("user"))?;

@@ -1,6 +1,6 @@
 # Container Configuration Reference
 
-Container configs live at `~/.config/enclo/containers/<NAME>.toml`. Pass an explicit path with `--config <PATH>` to override the name-based lookup.
+Container configs live at `~/.config/enclo/hosts/<NAME>.toml`. Pass an explicit path with `--config <PATH>` to override the name-based lookup.
 
 ## Workspace-local configuration
 
@@ -17,7 +17,7 @@ workspace_network = true # optional: private bridge per instance
 directory = "/workspace" # optional
 ```
 
-`from` selects a profile from `~/.config/enclo/containers/` (respecting `XDG_CONFIG_HOME`). It accepts letters, numbers, hyphens and underscores. The local file may also provide `container.home.init.command_after` when the central profile enables managed homes (see below). `container.workspace_network` may also be set locally. No other settings are allowed locally. All other configuration, including secrets and proxy settings, comes from the central profile.
+`from` selects a profile from `~/.config/enclo/hosts/` (respecting `XDG_CONFIG_HOME`). It accepts letters, numbers, hyphens and underscores. The local file may also provide `container.home.init.command_after` when the central profile enables managed homes (see below). `container.workspace_network` may also be set locally. No other settings are allowed locally. All other configuration, including secrets and proxy settings, comes from the central profile.
 
 The directory containing `.enclo.toml` is mounted read/write at `directory`, in addition to the central mounts. The destination defaults to the central profile's `container.directory`, then `/workspace`. Destinations must be absolute and cannot overlap central mounts, module mounts or protected system paths. Host workspace paths containing `:`, `%` or newlines are unsupported.
 

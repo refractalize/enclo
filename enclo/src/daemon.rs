@@ -68,7 +68,7 @@ impl Manager {
 
     fn resolve_config(&self, name: &str) -> std::path::PathBuf {
         self.config_dir
-            .join("containers")
+            .join("hosts")
             .join(format!("{}.toml", name))
     }
 

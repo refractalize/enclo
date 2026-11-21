@@ -92,7 +92,7 @@ impl LocalContainer {
             let old = String::from_utf8(old)?;
             if !rerun && old.starts_with(&format!("{id}:")) {
                 if old != stamp {
-                    eprintln!("Container initialization changed; keeping completed state. Use container init NAME --rerun to apply it.");
+                    eprintln!("Container initialization changed; keeping completed state. Use enclo host init NAME --rerun to apply it.");
                 }
                 return Ok(());
             }

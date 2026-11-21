@@ -18,13 +18,13 @@ impl Drop for Fixture {
 impl Fixture {
     fn new() -> Self {
         let dir = std::env::temp_dir().join(format!("elc-{:x}", rand_core::OsRng.next_u64()));
-        for sub in ["bin", "config/containers", "config/connections"] {
+        for sub in ["bin", "config/hosts", "config/connections"] {
             fs::create_dir_all(dir.join(sub)).unwrap();
         }
-        fs::write(dir.join("config/containers/dev.toml"), "[container]\nimage='fixture:latest'\nvolumes=['volume:/home/dev']\n[ssh]\nuser='dev'\n").unwrap();
+        fs::write(dir.join("config/hosts/dev.toml"), "[container]\nimage='fixture:latest'\nvolumes=['volume:/home/dev']\n[ssh]\nuser='dev'\n").unwrap();
         fs::write(
             dir.join("config/connections/work.toml"),
-            "[target]\ncontainer='dev'\n",
+            "[target]\nhost='dev'\n",
         )
         .unwrap();
         fs::write(dir.join("bin/podman"), r#"#!/usr/bin/python3
@@ -183,8 +183,8 @@ assert a[-1]=='true'
 #[test]
 fn independent_machine_lifecycle_and_fresh_endpoint_discovery() {
     let fixture = Fixture::new();
-    assert!(fixture.ok(&["container", "status", "dev"]).is_null());
-    let endpoint = fixture.ok(&["container", "start", "dev"]);
+    assert!(fixture.ok(&["host", "status", "dev"]).is_null());
+    let endpoint = fixture.ok(&["host", "start", "dev"]);
     assert_eq!(endpoint["port"], 23456);
     let runtime = fixture.dir.join("runtime/containers/dev");
     assert!(fixture.state().join("client_ed25519").exists());
@@ -200,22 +200,22 @@ fn independent_machine_lifecycle_and_fresh_endpoint_discovery() {
     );
     // Idempotent start doesn't create a second machine or change its key.
     let key = fs::read(fixture.state().join("client_ed25519")).unwrap();
-    fixture.ok(&["container", "start", "dev"]);
+    fixture.ok(&["host", "start", "dev"]);
     assert_eq!(
         key,
         fs::read(fixture.state().join("client_ed25519")).unwrap()
     );
     assert_eq!(
-        fixture.ok(&["container", "list"]).as_array().unwrap().len(),
+        fixture.ok(&["host", "list"]).as_array().unwrap().len(),
         1
     );
-    let config_path = fixture.dir.join("config/containers/dev.toml");
+    let config_path = fixture.dir.join("config/hosts/dev.toml");
     let original = fs::read_to_string(&config_path).unwrap();
     fs::write(&config_path, format!("{original}\n# comment only\n")).unwrap();
-    fixture.ok(&["container", "start", "dev"]);
+    fixture.ok(&["host", "start", "dev"]);
     let bootstrap_before = fs::read(fixture.state().join("bootstrap/sshd_config")).unwrap();
     fs::write(&config_path, original.replace("user='dev'", "user='other'")).unwrap();
-    let changed = fixture.run(&["container", "start", "dev"]);
+    let changed = fixture.run(&["host", "start", "dev"]);
     assert!(!changed.status.success());
     assert!(String::from_utf8_lossy(&changed.stderr).contains("configuration changed"));
     assert_eq!(
@@ -223,12 +223,12 @@ fn independent_machine_lifecycle_and_fresh_endpoint_discovery() {
         fs::read(fixture.state().join("bootstrap/sshd_config")).unwrap()
     );
     fs::write(&config_path, original).unwrap();
-    fixture.ok(&["container", "stop", "dev"]);
+    fixture.ok(&["host", "stop", "dev"]);
     assert_eq!(
-        fixture.ok(&["container", "status", "dev"])["running"],
+        fixture.ok(&["host", "status", "dev"])["running"],
         false
     );
-    assert_eq!(fixture.ok(&["container", "start", "dev"])["port"], 23457);
+    assert_eq!(fixture.ok(&["host", "start", "dev"])["port"], 23457);
     assert!(runtime.join("ssh_config-abc123-23457").exists());
     let calls = fs::read_to_string(fixture.dir.join("calls")).unwrap();
     assert_eq!(
@@ -239,9 +239,9 @@ fn independent_machine_lifecycle_and_fresh_endpoint_discovery() {
 #[test]
 fn rejects_foreign_containers_and_wrong_state_without_stopping_them() {
     let fixture = Fixture::new();
-    fixture.ok(&["container", "start", "dev"]);
+    fixture.ok(&["host", "start", "dev"]);
     let result = fixture.run(&[
-        "container",
+        "host",
         "start",
         "dev",
         "--state-dir",
@@ -253,7 +253,7 @@ fn rejects_foreign_containers_and_wrong_state_without_stopping_them() {
     let mut value: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     value["Config"]["Labels"]["io.enclo.scope"] = "foreign".into();
     fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
-    let result = fixture.run(&["container", "stop", "dev", "--force"]);
+    let result = fixture.run(&["host", "stop", "dev", "--force"]);
     assert!(!result.status.success());
     assert!(String::from_utf8_lossy(&result.stderr).contains("not owned"));
     assert!(!fs::read_to_string(fixture.dir.join("calls"))
@@ -291,7 +291,7 @@ fn container_services_and_sessions_use_real_ssh() {
     fs::remove_file(fixture.dir.join("bin/ssh")).unwrap();
     let user = String::from_utf8(Command::new("id").arg("-un").output().unwrap().stdout).unwrap();
     fs::write(
-        fixture.dir.join("config/containers/dev.toml"),
+        fixture.dir.join("config/hosts/dev.toml"),
         format!(
             "[container]\nimage='fixture'\n[ssh]\nuser='{}'\n",
             user.trim()
@@ -372,19 +372,19 @@ fn container_services_and_sessions_use_real_ssh() {
             .unwrap()
             .is_empty()
     });
-    let result = fixture.run(&["container", "stop", "dev"]);
+    let result = fixture.run(&["host", "stop", "dev"]);
     assert!(!result.status.success());
     assert!(String::from_utf8_lossy(&result.stderr).contains("active sessions"));
     fixture.ok(&["services", "stop", "work"]);
     assert!(children.0[2].try_wait().unwrap().is_none());
-    assert_eq!(fixture.ok(&["container", "status", "dev"])["running"], true);
+    assert_eq!(fixture.ok(&["host", "status", "dev"])["running"], true);
     let result = fixture.run(&["sessions", "stop", "--connection", "work", "--all"]);
     assert!(
         result.status.success(),
         "{}",
         String::from_utf8_lossy(&result.stderr)
     );
-    fixture.ok(&["container", "stop", "dev"]);
+    fixture.ok(&["host", "stop", "dev"]);
     struct Stop(Command);
     impl Drop for Stop {
         fn drop(&mut self) {
@@ -398,12 +398,12 @@ fn container_services_and_sessions_use_real_ssh() {
         "{}",
         String::from_utf8_lossy(&result.stderr)
     );
-    assert_eq!(fixture.ok(&["container", "status", "dev"])["running"], true);
+    assert_eq!(fixture.ok(&["host", "status", "dev"])["running"], true);
     assert_eq!(
         fixture.ok(&["services", "status", "work"])["transport_ready"],
         true
     );
-    fixture.ok(&["container", "recreate", "dev", "--force"]);
+    fixture.ok(&["host", "recreate", "dev", "--force"]);
     let result = fixture.run(&["session", "work", "--", "true"]);
     assert!(
         result.status.success(),
@@ -415,16 +415,16 @@ fn container_services_and_sessions_use_real_ssh() {
         "enclo-abc124"
     );
     fixture.ok(&["services", "stop", "work"]);
-    fixture.ok(&["container", "stop", "dev"]);
+    fixture.ok(&["host", "stop", "dev"]);
 }
 
 #[test]
 fn systemd_is_opt_in_and_masks_are_applied_before_init() {
     let fixture = Fixture::new();
-    let path = fixture.dir.join("config/containers/dev.toml");
+    let path = fixture.dir.join("config/hosts/dev.toml");
     let original = fs::read_to_string(&path).unwrap();
     fs::write(&path, format!("{original}\n[systemd]\nenabled=true\nmask=['systemd-oomd.service','systemd-oomd.socket']\n")).unwrap();
-    fixture.ok(&["container", "start", "dev"]);
+    fixture.ok(&["host", "start", "dev"]);
     let boot = fs::read_to_string(fixture.state().join("bootstrap/boot.sh")).unwrap();
     assert!(boot.contains(
         "systemctl --root=/ mask -- 'sshd.service' 'sshd.socket' 'ssh.service' 'ssh.socket' 'systemd-oomd.service' 'systemd-oomd.socket'\nexec /sbin/init"
@@ -437,7 +437,7 @@ fn systemd_is_opt_in_and_masks_are_applied_before_init() {
 #[test]
 fn invalid_mask_configuration_never_touches_podman() {
     let fixture = Fixture::new();
-    let path = fixture.dir.join("config/containers/dev.toml");
+    let path = fixture.dir.join("config/hosts/dev.toml");
     let original = fs::read_to_string(&path).unwrap();
     for section in [
         "[systemd]\nmask=['a.service']",
@@ -447,7 +447,7 @@ fn invalid_mask_configuration_never_touches_podman() {
         "[systemd]\nenabled=true\nmask=['enclo-sshd.service']",
     ] {
         fs::write(&path, format!("{original}\n{section}\n")).unwrap();
-        let result = fixture.run(&["container", "start", "dev"]);
+        let result = fixture.run(&["host", "start", "dev"]);
         assert!(!result.status.success());
         assert!(String::from_utf8_lossy(&result.stderr).contains("mask"));
         assert!(!fixture.dir.join("calls").exists());
@@ -457,13 +457,13 @@ fn invalid_mask_configuration_never_touches_podman() {
 #[test]
 fn runtime_is_disposable_and_recreation_preserves_identity() {
     let fixture = Fixture::new();
-    let first = fixture.ok(&["container", "start", "dev"]);
+    let first = fixture.ok(&["host", "start", "dev"]);
     let state = fixture.state();
     let key = fs::read(state.join("client_ed25519")).unwrap();
     let pin = fs::read(state.join("instances/abc123/known_hosts")).unwrap();
     fs::remove_dir_all(fixture.dir.join("runtime")).unwrap();
     assert_eq!(
-        fixture.ok(&["container", "start", "dev"])["container_id"],
+        fixture.ok(&["host", "start", "dev"])["container_id"],
         first["container_id"]
     );
     assert_eq!(key, fs::read(state.join("client_ed25519")).unwrap());
@@ -472,22 +472,22 @@ fn runtime_is_disposable_and_recreation_preserves_identity() {
         fs::read(state.join("instances/abc123/known_hosts")).unwrap()
     );
     fixture.ok(&[
-        "container",
+        "host",
         "start",
         "dev",
         "--runtime-dir",
         fixture.dir.join("alternate").to_str().unwrap(),
     ]);
     for operation in ["remove", "recreate"] {
-        let result = fixture.run(&["container", operation, "dev"]);
+        let result = fixture.run(&["host", operation, "dev"]);
         assert!(!result.status.success());
         assert!(String::from_utf8_lossy(&result.stderr).contains("container is running"));
     }
-    let config = fixture.dir.join("config/containers/dev.toml");
+    let config = fixture.dir.join("config/hosts/dev.toml");
     let original = fs::read_to_string(&config).unwrap();
     fs::write(&config, "invalid toml [").unwrap();
     assert!(!fixture
-        .run(&["container", "recreate", "dev", "--force"])
+        .run(&["host", "recreate", "dev", "--force"])
         .status
         .success());
     fs::write(
@@ -495,23 +495,23 @@ fn runtime_is_disposable_and_recreation_preserves_identity() {
         original.replace("fixture:latest", "missing:latest"),
     )
     .unwrap();
-    let missing = fixture.run(&["container", "recreate", "dev", "--force"]);
+    let missing = fixture.run(&["host", "recreate", "dev", "--force"]);
     assert!(!missing.status.success());
     assert!(String::from_utf8_lossy(&missing.stderr).contains("existing container retained"));
     assert_eq!(
-        fixture.ok(&["container", "status", "dev"])["container_id"],
+        fixture.ok(&["host", "status", "dev"])["container_id"],
         first["container_id"]
     );
     fs::write(&config, original.replace("fixture:latest", "fixture:v2")).unwrap();
-    let replacement = fixture.ok(&["container", "recreate", "dev", "--force"]);
+    let replacement = fixture.ok(&["host", "recreate", "dev", "--force"]);
     assert_ne!(replacement["container_id"], first["container_id"]);
     assert_eq!(key, fs::read(state.join("client_ed25519")).unwrap());
     assert!(state.join("instances/abc124/known_hosts").exists());
-    fixture.ok(&["container", "stop", "dev"]);
+    fixture.ok(&["host", "stop", "dev"]);
     fs::remove_file(config).unwrap();
-    assert!(fixture.ok(&["container", "remove", "dev"]).is_null());
-    assert!(fixture.ok(&["container", "remove", "dev"]).is_null());
-    assert!(fixture.ok(&["container", "status", "dev"]).is_null());
+    assert!(fixture.ok(&["host", "remove", "dev"]).is_null());
+    assert!(fixture.ok(&["host", "remove", "dev"]).is_null());
+    assert!(fixture.ok(&["host", "status", "dev"]).is_null());
     assert_eq!(key, fs::read(state.join("client_ed25519")).unwrap());
     let calls = fs::read_to_string(fixture.dir.join("calls")).unwrap();
     assert!(!calls.contains("--volumes"));
@@ -520,10 +520,10 @@ fn runtime_is_disposable_and_recreation_preserves_identity() {
 #[test]
 fn pinned_host_key_cannot_be_silently_replaced() {
     let fixture = Fixture::new();
-    fixture.ok(&["container", "start", "dev"]);
+    fixture.ok(&["host", "start", "dev"]);
     let pin = fixture.state().join("instances/abc123/known_hosts");
     fs::write(&pin, "enclo-abc123 ssh-ed25519 DIFFERENT\n").unwrap();
-    let result = fixture.run(&["container", "start", "dev"]);
+    let result = fixture.run(&["host", "start", "dev"]);
     assert!(!result.status.success());
     assert!(String::from_utf8_lossy(&result.stderr).contains("host key changed"));
     assert!(fs::read_to_string(pin).unwrap().contains("DIFFERENT"));
@@ -532,12 +532,12 @@ fn pinned_host_key_cannot_be_silently_replaced() {
 #[test]
 fn recreation_imports_legacy_runtime_identity() {
     let fixture = Fixture::new();
-    fixture.ok(&["container", "start", "dev"]);
+    fixture.ok(&["host", "start", "dev"]);
     let key_path = fixture.state().join("client_ed25519");
     let key = fs::read(&key_path).unwrap();
     let legacy = fixture.dir.join("runtime/containers/dev/client_ed25519");
     fs::rename(&key_path, &legacy).unwrap();
-    fixture.ok(&["container", "recreate", "dev", "--force"]);
+    fixture.ok(&["host", "recreate", "dev", "--force"]);
     assert_eq!(key, fs::read(&key_path).unwrap());
 }
 
@@ -548,7 +548,7 @@ fn state_root_precedence_and_private_permissions() {
         let home = fixture.dir.join("home");
         let xdg = fixture.dir.join("xdg");
         let explicit = fixture.dir.join("flag");
-        let mut command = fixture.command(&["container", "start", "dev"]);
+        let mut command = fixture.command(&["host", "start", "dev"]);
         command.env("HOME", &home).env("XDG_STATE_HOME", &xdg);
         let expected = match mode {
             "flag" => {
@@ -603,14 +603,14 @@ fn state_root_precedence_and_private_permissions() {
 fn lifecycle_lock_is_shared_across_runtime_directories() {
     use std::os::fd::AsRawFd;
     let fixture = Fixture::new();
-    fixture.ok(&["container", "start", "dev"]);
+    fixture.ok(&["host", "start", "dev"]);
     let lock = fs::File::open(fixture.state().join("lifecycle.lock")).unwrap();
     assert_eq!(
         unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
         0
     );
     let result = fixture.run(&[
-        "container",
+        "host",
         "start",
         "dev",
         "--runtime-dir",
@@ -625,37 +625,37 @@ fn lifecycle_lock_is_shared_across_runtime_directories() {
 #[test]
 fn managed_home_persists_and_initialization_is_explicit_and_retryable() {
     let f = Fixture::new();
-    let path = f.dir.join("config/containers/dev.toml");
+    let path = f.dir.join("config/hosts/dev.toml");
     let config = "[container]\nimage='fixture:latest'\n[ssh]\nuser='dev'\n[home]\nenabled=true\n[home.init]\ntimeout_secs=1\ncommand='echo initial >> count'\n";
     fs::write(&path, config).unwrap();
-    let first = f.ok(&["container", "start", "dev"]);
+    let first = f.ok(&["host", "start", "dev"]);
     assert_eq!(first["home"]["path"], "/home/dev");
-    f.ok(&["container", "start", "dev"]);
-    f.ok(&["container", "recreate", "dev", "--force"]);
+    f.ok(&["host", "start", "dev"]);
+    f.ok(&["host", "recreate", "dev", "--force"]);
     assert_eq!(
         fs::read_to_string(f.dir.join("home/count")).unwrap(),
         "initial\n"
     );
     fs::write(&path, config.replace("echo initial", "echo changed")).unwrap();
-    f.ok(&["container", "start", "dev"]);
+    f.ok(&["host", "start", "dev"]);
     assert_eq!(
         fs::read_to_string(f.dir.join("home/count")).unwrap(),
         "initial\n"
     );
-    f.ok(&["container", "home-init", "dev", "--rerun"]);
+    f.ok(&["host", "home-init", "dev", "--rerun"]);
     assert_eq!(
         fs::read_to_string(f.dir.join("home/count")).unwrap(),
         "initial\nchanged\n"
     );
     fs::write(&path, config.replace("echo initial >> count", "exit 42")).unwrap();
-    let failed = f.run(&["container", "home-init", "dev", "--rerun"]);
+    let failed = f.run(&["host", "home-init", "dev", "--rerun"]);
     assert!(!failed.status.success());
-    assert_eq!(f.ok(&["container", "status", "dev"])["running"], false);
+    assert_eq!(f.ok(&["host", "status", "dev"])["running"], false);
     assert!(!f.dir.join("home/.enclo-init/central").exists());
     fs::write(&path, config).unwrap();
-    f.ok(&["container", "start", "dev"]);
-    f.ok(&["container", "remove", "dev", "--force"]);
-    let next = f.ok(&["container", "start", "dev"]);
+    f.ok(&["host", "start", "dev"]);
+    f.ok(&["host", "remove", "dev", "--force"]);
+    let next = f.ok(&["host", "start", "dev"]);
     assert_eq!(first["home"], next["home"]);
     assert_eq!(
         fs::read_to_string(f.dir.join("home/count")).unwrap(),
@@ -667,19 +667,19 @@ fn managed_home_persists_and_initialization_is_explicit_and_retryable() {
     )
     .unwrap();
     assert!(!f
-        .run(&["container", "home-init", "dev", "--rerun"])
+        .run(&["host", "home-init", "dev", "--rerun"])
         .status
         .success());
-    assert_eq!(f.ok(&["container", "status", "dev"])["running"], false);
+    assert_eq!(f.ok(&["host", "status", "dev"])["running"], false);
 }
 
 #[test]
 fn managed_home_rejects_mount_conflicts_and_foreign_volumes() {
     let f = Fixture::new();
-    let path = f.dir.join("config/containers/dev.toml");
+    let path = f.dir.join("config/hosts/dev.toml");
     let original = fs::read_to_string(&path).unwrap();
     fs::write(&path, format!("{original}\n[home]\nenabled=true\n")).unwrap();
-    assert!(!f.run(&["container", "start", "dev"]).status.success());
+    assert!(!f.run(&["host", "start", "dev"]).status.success());
     assert!(!f.dir.join("machine.json").exists());
     fs::write(
         &path,
@@ -690,7 +690,7 @@ fn managed_home_rejects_mount_conflicts_and_foreign_volumes() {
     )
     .unwrap();
     fs::write(f.dir.join("volume.json"), r#"{"Labels":{}}"#).unwrap();
-    assert!(!f.run(&["container", "start", "dev"]).status.success());
+    assert!(!f.run(&["host", "start", "dev"]).status.success());
     assert!(!f.dir.join("machine.json").exists());
 }
 
@@ -698,10 +698,10 @@ fn managed_home_rejects_mount_conflicts_and_foreign_volumes() {
 fn machine_features_wire_devices_setup_and_local_desktop_without_host_services() {
     for systemd in [false, true] {
         let f = Fixture::new();
-        let path = f.dir.join("config/containers/dev.toml");
+        let path = f.dir.join("config/hosts/dev.toml");
         let config = format!("[container]\nimage='fixture:latest'\n[ssh]\nuser='dev'\n[home]\nenabled=true\n[nested_podman]\nenabled=true\n[gpu]\nnvidia=['all']\ndrm=true\ndrm_nodes=['renderD128']\n[desktop]\nwayland=true\n[desktop.dbus]\nenabled=true\ntalk=['org.example.Test']\n[systemd]\nenabled={systemd}\n");
         fs::write(&path, config).unwrap();
-        f.ok(&["container", "start", "dev"]);
+        f.ok(&["host", "start", "dev"]);
         let calls: Vec<Vec<String>> = fs::read_to_string(f.dir.join("calls"))
             .unwrap()
             .lines()
@@ -740,18 +740,18 @@ fn machine_features_wire_devices_setup_and_local_desktop_without_host_services()
         // No host compositor, D-Bus or proxy is started by container start.
         assert!(!f.state().join("desktop/sockets/bus").exists());
         fs::write(f.dir.join("fail-nested"), "").unwrap();
-        assert!(!f.run(&["container", "start", "dev"]).status.success());
-        assert_eq!(f.ok(&["container", "status", "dev"])["running"], false);
+        assert!(!f.run(&["host", "start", "dev"]).status.success());
+        assert_eq!(f.ok(&["host", "status", "dev"])["running"], false);
     }
 }
 #[test]
 fn nested_proc_mode_is_explicit_and_probe_failure_stops_machine() {
     for mode in ["private", "host"] {
         let f = Fixture::new();
-        fs::write(f.dir.join("config/containers/dev.toml"), format!(
+        fs::write(f.dir.join("config/hosts/dev.toml"), format!(
             "[container]\nimage='fixture:latest'\n[ssh]\nuser='dev'\n[home]\nenabled=true\n[nested_podman]\nenabled=true\nproc_mount='{mode}'\n"
         )).unwrap();
-        f.ok(&["container", "start", "dev"]);
+        f.ok(&["host", "start", "dev"]);
         let calls: Vec<Vec<String>> = fs::read_to_string(f.dir.join("calls"))
             .unwrap()
             .lines()
@@ -771,10 +771,10 @@ fn nested_proc_mode_is_explicit_and_probe_failure_stops_machine() {
             mode == "private"
         );
         fs::write(f.dir.join("fail-proc"), "").unwrap();
-        let failure = f.run(&["container", "start", "dev"]);
+        let failure = f.run(&["host", "start", "dev"]);
         assert!(!failure.status.success());
         assert!(String::from_utf8_lossy(&failure.stderr).contains("proc mount check failed"));
-        assert_eq!(f.ok(&["container", "status", "dev"])["running"], false);
+        assert_eq!(f.ok(&["host", "status", "dev"])["running"], false);
     }
 }
 
@@ -789,10 +789,10 @@ fn machine_features_reject_conflicts_before_podman() {
         "[desktop.dbus]\nenabled=true\ncall=['bad rule']",
     ] {
         let f = Fixture::new();
-        let path = f.dir.join("config/containers/dev.toml");
+        let path = f.dir.join("config/hosts/dev.toml");
         let original = fs::read_to_string(&path).unwrap();
         fs::write(path, format!("{original}\n{extra}\n")).unwrap();
-        assert!(!f.run(&["container", "start", "dev"]).status.success());
+        assert!(!f.run(&["host", "start", "dev"]).status.success());
         assert!(!f.dir.join("calls").exists());
     }
 }
@@ -806,8 +806,8 @@ fn ssh_export_uses_persistent_trust_and_add_updates_only_its_block() {
     let original =
         "# unrelated configuration\nHost *\n Port 2222\nHost other\n HostName example.org\n";
     fs::write(&config, original).unwrap();
-    f.ok(&["container", "start", "dev"]);
-    let export = f.run(&["container", "export", "dev"]);
+    f.ok(&["host", "start", "dev"]);
+    let export = f.run(&["host", "export", "dev"]);
     assert!(
         export.status.success(),
         "{}",
@@ -821,7 +821,7 @@ fn ssh_export_uses_persistent_trust_and_add_updates_only_its_block() {
     assert!(!text.contains("/runtime/"));
     assert_eq!(fs::read_to_string(&config).unwrap(), original);
     let add = || {
-        f.command(&["container", "export", "dev", "--add"])
+        f.command(&["host", "export", "dev", "--add"])
             .env("HOME", &home)
             .output()
             .unwrap()
@@ -847,7 +847,7 @@ fn ssh_export_uses_persistent_trust_and_add_updates_only_its_block() {
     let target = home.join("dotfile");
     fs::rename(&config, &target).unwrap();
     std::os::unix::fs::symlink(&target, &config).unwrap();
-    f.ok(&["container", "recreate", "dev", "--force"]);
+    f.ok(&["host", "recreate", "dev", "--force"]);
     assert!(add().status.success());
     assert!(fs::symlink_metadata(&config)
         .unwrap()
@@ -858,11 +858,11 @@ fn ssh_export_uses_persistent_trust_and_add_updates_only_its_block() {
     assert_eq!(updated, first);
     assert!(!updated.contains("HostKeyAlias enclo-abc123"));
     assert!(updated.ends_with(original));
-    let custom = f.run(&["container", "export", "dev", "--host", "enclo-work"]);
+    let custom = f.run(&["host", "export", "dev", "--host", "enclo-work"]);
     assert!(custom.status.success());
     assert!(custom.stdout.starts_with(b"Host enclo-work\n"));
     assert!(!f
-        .run(&["container", "export", "dev", "--host", "bad\nHost *"])
+        .run(&["host", "export", "dev", "--host", "bad\nHost *"])
         .status
         .success());
     fs::write(&target, "Host enclo-dev\n HostName user-managed.example\n").unwrap();
@@ -870,8 +870,8 @@ fn ssh_export_uses_persistent_trust_and_add_updates_only_its_block() {
     assert!(fs::read_to_string(&target)
         .unwrap()
         .contains("user-managed.example"));
-    f.ok(&["container", "stop", "dev"]);
-    let stopped = f.run(&["container", "export", "dev"]);
+    f.ok(&["host", "stop", "dev"]);
+    let stopped = f.run(&["host", "export", "dev"]);
     assert!(!stopped.status.success());
     assert!(String::from_utf8_lossy(&stopped.stderr).contains("container is stopped"));
 }
@@ -879,33 +879,33 @@ fn ssh_export_uses_persistent_trust_and_add_updates_only_its_block() {
 #[test]
 fn fixed_ssh_port_and_stable_export_trust_survive_recreation() {
     let f = Fixture::new();
-    let config = f.dir.join("config/containers/dev.toml");
+    let config = f.dir.join("config/hosts/dev.toml");
     let original = fs::read_to_string(&config).unwrap();
     fs::write(&config, format!("{original}host_port=2222\n")).unwrap();
-    assert_eq!(f.ok(&["container", "start", "dev"])["port"], 2222);
-    let before = f.run(&["container", "export", "dev"]);
+    assert_eq!(f.ok(&["host", "start", "dev"])["port"], 2222);
+    let before = f.run(&["host", "export", "dev"]);
     assert!(before.status.success());
     let pin = f.state().join("known_hosts");
     let first = fs::read_to_string(&pin).unwrap();
     // A changed key for the same instance remains forbidden, including export trust.
     fs::write(f.dir.join("host.pub"), "ssh-ed25519 AAAANEW fixture").unwrap();
-    assert!(!f.run(&["container", "start", "dev"]).status.success());
+    assert!(!f.run(&["host", "start", "dev"]).status.success());
     assert_eq!(fs::read_to_string(&pin).unwrap(), first);
     assert_eq!(
-        f.ok(&["container", "recreate", "dev", "--force"])["port"],
+        f.ok(&["host", "recreate", "dev", "--force"])["port"],
         2222
     );
     assert!(fs::read_to_string(&pin).unwrap().contains("AAAANEW"));
-    assert_eq!(f.run(&["container", "export", "dev"]).stdout, before.stdout);
+    assert_eq!(f.run(&["host", "export", "dev"]).stdout, before.stdout);
     assert!(
         fs::read_to_string(f.state().join("instances/abc123/known_hosts"))
             .unwrap()
             .contains("AAAATEST")
     );
     fs::write(&config, format!("{original}host_port=2223\n")).unwrap();
-    assert!(!f.run(&["container", "start", "dev"]).status.success());
+    assert!(!f.run(&["host", "start", "dev"]).status.success());
     fs::write(f.dir.join("port-busy"), "").unwrap();
-    let failure = f.run(&["container", "recreate", "dev", "--force"]);
+    let failure = f.run(&["host", "recreate", "dev", "--force"]);
     assert!(!failure.status.success());
     let error = String::from_utf8_lossy(&failure.stderr);
     assert!(error.contains("127.0.0.1:2223") && error.contains("address already in use"));
@@ -915,10 +915,10 @@ fn fixed_ssh_port_and_stable_export_trust_survive_recreation() {
 fn invalid_host_ports_are_rejected_before_podman() {
     for value in ["0", "65536", "-1", "'2222'"] {
         let f = Fixture::new();
-        let config = f.dir.join("config/containers/dev.toml");
+        let config = f.dir.join("config/hosts/dev.toml");
         let original = fs::read_to_string(&config).unwrap();
         fs::write(&config, format!("{original}host_port={value}\n")).unwrap();
-        assert!(!f.run(&["container", "start", "dev"]).status.success());
+        assert!(!f.run(&["host", "start", "dev"]).status.success());
         assert!(!f.dir.join("calls").exists());
     }
 }
@@ -926,21 +926,21 @@ fn invalid_host_ports_are_rejected_before_podman() {
 #[test]
 fn container_init_follows_home_and_tracks_instance_not_home_lifetime() {
     let f = Fixture::new();
-    let path = f.dir.join("config/containers/dev.toml");
+    let path = f.dir.join("config/hosts/dev.toml");
     let config = "[container]\nimage='fixture:latest'\n[container.init]\ncommand='test -f ../home/count; echo init >> count'\n[ssh]\nuser='dev'\n[home]\nenabled=true\n[home.init]\ncommand='echo home >> count'\n";
     fs::write(&path, config).unwrap();
-    f.ok(&["container", "start", "dev"]);
+    f.ok(&["host", "start", "dev"]);
     assert_eq!(fs::read_to_string(f.dir.join("hook-user")).unwrap(), "0:0");
-    f.ok(&["container", "start", "dev"]);
-    f.ok(&["container", "init", "dev"]);
-    f.ok(&["container", "stop", "dev"]);
-    f.ok(&["container", "start", "dev"]);
+    f.ok(&["host", "start", "dev"]);
+    f.ok(&["host", "init", "dev"]);
+    f.ok(&["host", "stop", "dev"]);
+    f.ok(&["host", "start", "dev"]);
     assert_eq!(fs::read_to_string(f.dir.join("init-work/count")).unwrap(), "init\n");
     fs::write(&path, config.replace("echo init", "echo changed")).unwrap();
-    f.ok(&["container", "start", "dev"]);
+    f.ok(&["host", "start", "dev"]);
     assert_eq!(fs::read_to_string(f.dir.join("init-work/count")).unwrap(), "init\n");
-    f.ok(&["container", "init", "dev", "--rerun"]);
-    f.ok(&["container", "recreate", "dev", "--force"]);
+    f.ok(&["host", "init", "dev", "--rerun"]);
+    f.ok(&["host", "recreate", "dev", "--force"]);
     assert_eq!(fs::read_to_string(f.dir.join("init-work/count")).unwrap(), "init\nchanged\nchanged\n");
     assert_eq!(fs::read_to_string(f.dir.join("home/count")).unwrap(), "home\n");
 }
@@ -949,20 +949,20 @@ fn container_init_follows_home_and_tracks_instance_not_home_lifetime() {
 fn container_init_failure_and_timeout_stop_machine_and_are_retryable() {
     for script in ["echo intentional >&2; exit 42", "sleep 2"] {
         let f = Fixture::new();
-        let path = f.dir.join("config/containers/dev.toml");
+        let path = f.dir.join("config/hosts/dev.toml");
         let config = format!("[container]\nimage='fixture:latest'\n[container.init]\nuser='dev'\ntimeout_secs=1\ncommand='{script}'\n[ssh]\nuser='dev'\n");
         fs::write(&path, &config).unwrap();
-        let out = f.run(&["container", "start", "dev"]);
+        let out = f.run(&["host", "start", "dev"]);
         assert!(!out.status.success());
         assert!(String::from_utf8_lossy(&out.stderr).contains("container initialization"));
-        assert_eq!(f.ok(&["container", "status", "dev"])["running"], false);
+        assert_eq!(f.ok(&["host", "status", "dev"])["running"], false);
         assert!(!f.dir.join("checkpoint/container-init").exists());
         fs::write(&path, config.replace(script, "echo success >> count")).unwrap();
-        f.ok(&["container", "start", "dev"]);
+        f.ok(&["host", "start", "dev"]);
         assert_eq!(fs::read_to_string(f.dir.join("hook-user")).unwrap(), format!("{}:{}", unsafe { libc::geteuid() }, unsafe { libc::getegid() }));
         assert!(f.dir.join("checkpoint/container-init").exists());
         fs::write(&path, config).unwrap();
-        assert!(!f.run(&["container", "init", "dev", "--rerun"]).status.success());
+        assert!(!f.run(&["host", "init", "dev", "--rerun"]).status.success());
         assert!(!f.dir.join("checkpoint/container-init").exists());
     }
 }
@@ -971,8 +971,8 @@ fn container_init_failure_and_timeout_stop_machine_and_are_retryable() {
 fn container_init_rejects_invalid_configuration() {
     for options in ["timeout_secs=0", "user='--root'", "command=\"bad\\u0000command\""] {
         let f = Fixture::new();
-        fs::write(f.dir.join("config/containers/dev.toml"), format!("[container]\nimage='fixture:latest'\n[container.init]\n{options}\n[ssh]\nuser='dev'\n")).unwrap();
-        assert!(!f.run(&["container", "start", "dev"]).status.success());
+        fs::write(f.dir.join("config/hosts/dev.toml"), format!("[container]\nimage='fixture:latest'\n[container.init]\n{options}\n[ssh]\nuser='dev'\n")).unwrap();
+        assert!(!f.run(&["host", "start", "dev"]).status.success());
         assert!(!f.dir.join("calls").exists());
     }
 }
@@ -980,16 +980,16 @@ fn container_init_rejects_invalid_configuration() {
 #[test]
 fn hostname_is_passed_to_podman_and_changes_require_recreation() {
     let f = Fixture::new();
-    let path = f.dir.join("config/containers/dev.toml");
+    let path = f.dir.join("config/hosts/dev.toml");
     let original = fs::read_to_string(&path).unwrap();
-    f.ok(&["container", "start", "dev"]);
+    f.ok(&["host", "start", "dev"]);
     let initial_calls = fs::read_to_string(f.dir.join("calls")).unwrap();
     assert!(!initial_calls.contains("--hostname"));
     fs::write(&path, original.replace("[container]", "[container]\nhostname='forbes'")).unwrap();
-    let changed = f.run(&["container", "start", "dev"]);
+    let changed = f.run(&["host", "start", "dev"]);
     assert!(!changed.status.success());
     assert!(String::from_utf8_lossy(&changed.stderr).contains("configuration changed"));
-    f.ok(&["container", "recreate", "dev", "--force"]);
+    f.ok(&["host", "recreate", "dev", "--force"]);
     let calls: Vec<Vec<String>> = fs::read_to_string(f.dir.join("calls")).unwrap().lines()
         .map(|line| serde_json::from_str(line).unwrap()).collect();
     let run = calls.iter().rev().find(|args| args[0] == "run").unwrap();
@@ -1001,9 +1001,9 @@ fn hostname_is_passed_to_podman_and_changes_require_recreation() {
 fn invalid_hostnames_are_rejected_before_podman() {
     for name in ["", "-bad", "bad-", "two words", "a..b", "a/b", "forbes\nother", "é", &"a".repeat(65)] {
         let f = Fixture::new();
-        let path = f.dir.join("config/containers/dev.toml");
+        let path = f.dir.join("config/hosts/dev.toml");
         fs::write(&path, format!("[container]\nimage='fixture:latest'\nhostname={}\n[ssh]\nuser='dev'\n", serde_json::to_string(name).unwrap())).unwrap();
-        assert!(!f.run(&["container", "start", "dev"]).status.success());
+        assert!(!f.run(&["host", "start", "dev"]).status.success());
         assert!(!f.dir.join("calls").exists());
     }
 }

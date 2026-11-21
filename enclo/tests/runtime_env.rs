@@ -74,13 +74,13 @@ fn config_override_is_an_application_root_and_flag_wins() {
         fs::create_dir_all(root.join("connections")).unwrap();
         fs::write(
             root.join("connections/work.toml"),
-            "[target]\ncontainer='../invalid'\n",
+            "[target]\nhost='../invalid'\n",
         )
         .unwrap();
-        fs::create_dir_all(root.join("containers")).unwrap();
+        fs::create_dir_all(root.join("hosts")).unwrap();
         // Parse failure proves selection without ever invoking Podman or a daemon.
         fs::write(
-            root.join("containers/work.toml"),
+            root.join("hosts/work.toml"),
             "[container]\n[ssh]\nuser='dev'\n",
         )
         .unwrap();
@@ -93,11 +93,11 @@ fn config_override_is_an_application_root_and_flag_wins() {
         (None, Some(std::ffi::OsStr::new("")), Some(&xdg), true),
         (None, None, None, true),
     ] {
-        for command in ["services", "container"] {
+        for command in ["services", "host"] {
             let mut cmd = Command::new(env!("CARGO_BIN_EXE_enclo"));
             cmd.args([
                 command,
-                if command == "container" {
+                if command == "host" {
                     "start"
                 } else {
                     "run"
